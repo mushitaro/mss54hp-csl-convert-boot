@@ -1,0 +1,20 @@
+{
+  "name": "MSS54HP CSL CONVERT /// BOOT",
+  "short_name": "CSL BOOT",
+  "description": "MSS54HP bootloader replacement over OBD. Android + WebUSB.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "lang": "ja",
+  "categories": ["utilities"],
+  "icons": [
+    { "src": "/icons/modification-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/modification-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/modification-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/modification-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

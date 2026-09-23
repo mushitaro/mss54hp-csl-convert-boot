@@ -50,7 +50,7 @@ import {
 } from './usb';
 import { linkBlock } from './platform';
 import { uploadRun, uploadSupported } from './upload';
-import { BUILD_ID, applyUpdate, isInstalled } from './pwa';
+import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
 
 
 interface BackupResult {
@@ -212,6 +212,10 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     const [practice, setPractice] = useState(false);
 
     useEffect(() => { onUpdateAvailable?.(() => setUpdateWaiting(true)); }, [onUpdateAvailable]);
+    // What the service worker is told when it asks whether an update may download now. Connected
+    // counts as well as running: between two operations a reload would still drop the link and
+    // everything read over it.
+    useEffect(() => { setLinkBusy(connected || busy !== null); }, [connected, busy]);
 
     const log = useCallback((line: string) => setEvents((prev) => [...prev, line]), []);
 
@@ -1620,9 +1624,10 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                     {!busy && backup && uploadSupported() && (
                         <SubAction label={c.uploadRun} onClick={() => void uploadSession()} />
                     )}
-                    {/* Only while nothing is running - the whole row is hidden during a transfer,
-                        which is exactly the guarantee the no-skipWaiting rule needs. */}
-                    {!busy && updateWaiting && (
+                    {/* Only while nothing is running and nothing is connected - the whole row is
+                        hidden during a transfer, which is exactly the guarantee the no-skipWaiting
+                        rule needs, and a reload with a cable in would drop the link. */}
+                    {!busy && !connected && updateWaiting && (
                         <SubAction label={c.updateApply} onClick={() => void applyUpdate()} />
                     )}
                 </SubActions>

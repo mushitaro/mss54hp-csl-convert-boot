@@ -13,11 +13,32 @@
 declare const __BUILD_ID__: string;
 export const BUILD_ID: string = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev';
 
+/** Whether a link is connected or an operation is running. Set by the app on every change. */
+let linkBusy = false;
+
+/**
+ * Tell the service worker, when it asks, that now is not the time.
+ *
+ * A worker that is about to install an update asks every open page first (`anyPageBusy` in
+ * sw-template.js), and a busy page makes it give up before downloading anything - the browser
+ * tries again at its next check. Answered from here rather than pushed from the app, because the
+ * worker that asks is a new one the page has never spoken to.
+ */
+export function setLinkBusy(busy: boolean): void {
+    linkBusy = busy;
+}
+
 export function registerServiceWorker(onUpdate: () => void): void {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
     // Not during `vite dev`: a worker caching a dev server produces failures that look like app
     // bugs and are not.
     if (import.meta.env.DEV) return;
+
+    navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+        if ((event.data as { type?: string } | null)?.type === 'busy?') event.ports[0]?.postMessage(linkBusy);
+    });
+    // Messages from a worker are held until the page says it is listening.
+    navigator.serviceWorker.startMessages();
 
     window.addEventListener('load', () => {
         void navigator.serviceWorker.register('/sw.js').then((registration) => {
