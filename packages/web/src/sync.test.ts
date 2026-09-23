@@ -6,8 +6,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-    canSync, cloudFilename, currentGate, deleteDiagnostic, deleteRun, flushDiagnostics,
-    listDiagnostics, listRuns, recordDiagnostic,
+    canSync, cloudFilename, currentGate, deleteDiagnostic, deleteRun, fetchDiagnosticLog, fetchRunPart,
+    flushDiagnostics, listDiagnostics, listRuns, recordDiagnostic, SyncRequestError,
 } from './sync';
 
 type Seen = { url: string; init: RequestInit | undefined };
@@ -100,6 +100,34 @@ describe('a failure in the preview build', () => {
         page({ 'app-variant': 'preview' });
         globalThis.fetch = (async () => { throw new TypeError('offline'); }) as unknown as typeof globalThis.fetch;
         expect(() => recordDiagnostic({ stage: 'BACKUP', error: 'x', log: [], practice: false })).not.toThrow();
+    });
+});
+
+describe('a download after the sign-in has lapsed', () => {
+    const answer = (status: number) => {
+        globalThis.fetch = (async (url: string, init?: RequestInit) => {
+            seen.push({ url, init });
+            return new Response(JSON.stringify({ error: 'x' }), { status });
+        }) as unknown as typeof globalThis.fetch;
+    };
+
+    it('says so by its status, for IMAGE, LOG and an error record LOG, so the app can offer SIGN IN', async () => {
+        page({ 'app-variant': 'preview' });
+        answer(401);
+        for (const attempt of [fetchRunPart('r1', 'image'), fetchRunPart('r1', 'log'), fetchDiagnosticLog('d1')]) {
+            const error = await attempt.then(() => null, (e: unknown) => e);
+            expect(error).toBeInstanceOf(SyncRequestError);
+            expect((error as SyncRequestError).expired).toBe(true);
+        }
+    });
+
+    it('is not confused with any other refusal', async () => {
+        page({ 'app-variant': 'preview' });
+        answer(404);
+        const error = await fetchRunPart('r1', 'image').then(() => null, (e: unknown) => e);
+        expect(error).toBeInstanceOf(SyncRequestError);
+        expect((error as SyncRequestError).expired).toBe(false);
+        expect((error as Error).message).toBe('image: 404');
     });
 });
 

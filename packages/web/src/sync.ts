@@ -61,6 +61,23 @@ export interface CloudDiagnostic {
 
 const NOT_SYNCING: ApiResult<never> = { ok: false, status: 0, data: null, expired: false, tooLarge: false };
 
+/**
+ * A SYNC request the server answered with something other than success, carrying the status so
+ * the caller can tell a lapsed sign-in (401 - offer SIGN IN) from anything else (say what failed).
+ */
+export class SyncRequestError extends Error {
+    readonly status: number;
+    constructor(what: string, status: number) {
+        super(`${what}: ${status}`);
+        this.name = 'SyncRequestError';
+        this.status = status;
+    }
+    /** The gate refused: this browser's session has lapsed. */
+    get expired(): boolean {
+        return this.status === 401;
+    }
+}
+
 export async function listRuns(): Promise<ApiResult<{ runs: CloudRun[] }>> {
     if (!canSync()) return NOT_SYNCING;
     return api<{ runs: CloudRun[] }>('/api/runs?limit=50');
@@ -91,7 +108,7 @@ export async function deleteDiagnostic(id: string): Promise<ApiResult<unknown>> 
 export async function fetchRunPart(id: string, part: 'image' | 'log'): Promise<Uint8Array> {
     if (!canSync()) throw new Error('This build does not sync.');
     const response = await fetch(`/api/runs/${encodeURIComponent(id)}?part=${part}`, { credentials: 'same-origin', cache: 'no-store' });
-    if (!response.ok) throw new Error(`${part}: ${response.status}`);
+    if (!response.ok) throw new SyncRequestError(part, response.status);
     const stream = (response.body ?? new Blob([]).stream()).pipeThrough(new DecompressionStream('gzip'));
     return new Uint8Array(await new Response(stream).arrayBuffer());
 }
@@ -100,7 +117,7 @@ export async function fetchRunPart(id: string, part: 'image' | 'log'): Promise<U
 export async function fetchDiagnosticLog(id: string): Promise<string> {
     if (!canSync()) throw new Error('This build does not sync.');
     const r = await api<{ diagnostic: { log_excerpt: string | null } }>(`/api/diagnostics/${encodeURIComponent(id)}`);
-    if (!r.ok || !r.data) throw new Error(`log: ${r.status}`);
+    if (!r.ok || !r.data) throw new SyncRequestError('log', r.status);
     return r.data.diagnostic.log_excerpt ?? '';
 }
 

@@ -53,6 +53,7 @@ import { UploadError, uploadRun, uploadSupported } from './upload';
 import {
     canSync, currentGate, recordDiagnostic, flushDiagnostics, reauthHref,
     listRuns, listDiagnostics, deleteRun, deleteDiagnostic, fetchRunPart, fetchDiagnosticLog, cloudFilename,
+    SyncRequestError,
     type CloudRun, type CloudDiagnostic, type GateState,
 } from './sync';
 import { CloudPanel, PrivacyHeaderLink, when } from './cloud';
@@ -1298,13 +1299,21 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         if (showCloud && gate.state === 'active') void loadCloud();
     }, [showCloud, gate.state, loadCloud]);
 
-    /** One request for one row at a time; its failure is a notice, never a thrown error. */
+    /**
+     * One request for one row at a time; its failure is a notice, never a thrown error.
+     *
+     * Except a lapsed sign-in (401), from any of them - IMAGE, LOG or DELETE: that marks the gate
+     * expired, which puts the panel's own line and SIGN IN in front of the owner, the same as a
+     * listing that comes back 401. A notice saying "image: 401" as well would say it twice, and
+     * the less useful way.
+     */
     const cloudAction = useCallback(async (id: string, act: () => Promise<void>) => {
         setCloudPending(id);
         try {
             await act();
         } catch (error) {
-            setNotice({ kind: 'error', text: message(error) });
+            if (error instanceof SyncRequestError && error.expired) setGate((g) => ({ ...g, state: 'expired' }));
+            else setNotice({ kind: 'error', text: message(error) });
         } finally {
             setCloudPending(null);
         }
@@ -1312,8 +1321,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
 
     const removeFromCloud = useCallback(async (id: string, remove: (id: string) => ReturnType<typeof deleteRun>) => {
         const r = await remove(id);
-        if (r.expired) setGate((g) => ({ ...g, state: 'expired' }));
-        if (!r.ok) throw new Error(`DELETE: ${r.status}`);
+        if (!r.ok) throw new SyncRequestError('DELETE', r.status);
         await loadCloud();
     }, [loadCloud]);
 
