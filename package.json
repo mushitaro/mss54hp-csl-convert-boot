@@ -10,7 +10,7 @@
     "gen:region-table": "python tools/analysis/gen_region_table.py",
     "dev": "vite --config packages/web/vite.config.ts packages/web",
     "build": "vite build --config packages/web/vite.config.ts packages/web",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/web",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/web && tsc --noEmit -p functions",
     "lint": "npx eslint packages/web/src",
     "icons": "node tools/icons/make_icons.mjs",
     "preview": "vite preview --config packages/web/vite.config.ts packages/web",
@@ -23,6 +23,7 @@
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260923.1",
     "@eslint/js": "^9.39.5",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^20",

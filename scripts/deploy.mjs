@@ -12,6 +12,8 @@
 //   2. functions/_middleware.ts is missing, or `gate:verify` fails. Without the gate this origin
 //      serves the app, the API and BMW's files to anyone.
 //   3. check-public-tree fails. The source of what is served is public; so must the tree be clean.
+//      And `npm run typecheck` fails - which includes functions/ against the Workers types, so a
+//      handler or D1 mistake in the owner-scoped API cannot ship on a green build alone.
 //   4. The working tree has changes (untracked CLAUDE.md and .claude/ aside - agent notes, never
 //      tracked). A build from uncommitted files serves source nobody can read.
 //   5. The source is not public. The preview may serve only source anyone can read: every build
@@ -81,6 +83,8 @@ ok('owner gate');
 
 // 3. the public tree
 if (!run('node', ['scripts/check-public-tree.mjs'])) refuse('check-public-tree failed.');
+if (!run('npm', ['run', '--silent', 'typecheck'])) refuse('typecheck failed (the app, the tools, or functions/).');
+ok('typecheck, including functions/');
 
 // 4. a clean tree
 const dirty = git('status', '--porcelain')

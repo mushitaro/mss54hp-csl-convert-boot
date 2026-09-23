@@ -28,4 +28,4 @@ export const onRequest = createGate({
         '/icons/modification-dev-256.png',
         '/icons/modification-dev-32.png',
     ],
-}) as unknown as PagesFunction;
+});
