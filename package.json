@@ -17,7 +17,8 @@
     "deploy": "npm run build && npx wrangler pages deploy",
     "db:migrate:local": "npx wrangler d1 migrations apply mss54hp-boot-runs --local",
     "db:migrate:remote": "npx wrangler d1 migrations apply mss54hp-boot-runs --remote",
-    "runs": "npx wrangler d1 execute mss54hp-boot-runs --remote --command \"SELECT id, created_at, ident, verified, differing_count, censored_blank, logged_in, elapsed_seconds FROM runs ORDER BY created_at DESC LIMIT 20\""
+    "runs": "npx wrangler d1 execute mss54hp-boot-runs --remote --command \"SELECT id, created_at, ident, verified, differing_count, censored_blank, logged_in, elapsed_seconds FROM runs ORDER BY created_at DESC LIMIT 20\"",
+    "gate:verify": "node scripts/gate-verify.mjs --functions functions --client packages/web/src/owner-sync.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
