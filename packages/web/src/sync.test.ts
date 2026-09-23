@@ -82,6 +82,20 @@ describe('a failure in the preview build', () => {
         expect(lines.at(-1)).toBe('LINE 299');
     });
 
+    it('sends nothing that was waiting until the gate says the session is active', async () => {
+        page({ 'app-variant': 'preview' });
+        globalThis.fetch = (async (url: string, init?: RequestInit) => {
+            seen.push({ url, init });
+            return new Response(JSON.stringify({ state: 'expired', account_label: 'owner-a' }), { status: 200 });
+        }) as unknown as typeof globalThis.fetch;
+
+        flushDiagnostics();
+        await tick();
+        await tick();
+
+        expect(seen.map((s) => s.url)).toEqual(['/_gate/status']);
+    });
+
     it('never throws into the caller, even when the network does', () => {
         page({ 'app-variant': 'preview' });
         globalThis.fetch = (async () => { throw new TypeError('offline'); }) as unknown as typeof globalThis.fetch;

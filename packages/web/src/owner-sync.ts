@@ -132,11 +132,32 @@ export function outbox(dbName: string) {
         // Nowhere to keep it: the record is lost, the operation is not.
       }
     },
-    /** Send what is waiting, oldest first; stop at the first failure. Returns how many went. */
+    /**
+     * Send what is waiting, oldest first; stop at the first failure. Returns how many went.
+     *
+     * Only to the account the records were queued under. A record waiting here
+     * was written while this device was signed in as someone — and it may carry
+     * that someone's VIN. If a different account has signed in on this device
+     * since, the records are dropped rather than filed under the new account,
+     * where their owner could never see or delete them and the new owner could.
+     * Nothing is sent while the session is not active.
+     */
     async flush(send: (record: unknown) => Promise<boolean>): Promise<number> {
       let sent = 0;
+      const { state, label } = await gateStatus();
+      if (state !== 'active' || !label) return 0;
+      const key = `${dbName}:account`;
+      let last: string | null = null;
+      try {
+        last = localStorage.getItem(key);
+        localStorage.setItem(key, label);
+      } catch {
+        // No storage to remember the account in: send nothing we cannot attribute.
+        return 0;
+      }
       try {
         const db = await idb(dbName);
+        if (last && last !== label) await tx(db, 'readwrite', (s) => s.clear());
         const rows = (await tx(db, 'readonly', (s) => s.getAll())) as { key: IDBValidKey; record: unknown }[];
         for (const row of rows) {
           if (!(await send(row.record))) break;
