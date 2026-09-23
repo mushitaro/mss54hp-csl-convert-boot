@@ -143,9 +143,12 @@ const JA = {
         + 'フラッシュカウンタを 1 スロット消費します。これは元に戻せません。\n\n'
         + '実行しますか？',
     saveLog: 'ログを保存',
-    uploadDone: (bytes: number) =>
-        `送信しました（イメージ ${Math.round(bytes / 1024).toLocaleString()} KB、gzip 圧縮後）。`,
+    uploadDone: (bytes: number, account: string | null) =>
+        `${account ? `アカウント ${account} に` : ''}保存しました（イメージ ${Math.round(bytes / 1024).toLocaleString()} KB、gzip 圧縮後）。`,
     uploadFailed: (why: string) => `送信できませんでした: ${why}`,
+    uploadExpired: 'サインインが切れていたため送れませんでした。イメージはこの端末に残っています。'
+        + '切断してから、最初の画面でサインインし直してください。',
+    uploadTooLarge: '大きすぎて送れません。イメージはこの端末に残っています。',
     // Said on the screen that calls this file the only way back. The firmware substitutes 0xFF for
     // reads of 0x4000-0x4017 (handler 0x201A), so these 24 bytes are not in the capture, are not in
     // the two-pass comparison, and cannot be restored from it. Not a defect in the read - it is the
@@ -401,6 +404,25 @@ const JA = {
     updateWaiting: '新しいビルドがあります。転送中でなければ UPDATE を押してください。',
     updateApply: 'UPDATE',
 
+    // --- SYNC (preview only) -----------------------------------------------------------------
+    // What is kept, first; where it came from and how to use it, after. The limit - nothing is
+    // stored on the phone itself - is said once, as the way back rather than as a refusal.
+    syncAccount: (label: string | null) => `保存先 アカウント ${label ?? '—'}`,
+    syncBody: 'UPLOAD したイメージとログ、自動で送られた失敗の記録です。'
+        + 'IMAGE で取り出した .bin は、BACKUP の「控えと照合する」でそのまま読み込めます。',
+    syncRuns: 'RUNS',
+    syncErrors: 'ERRORS',
+    syncEmpty: 'まだありません。',
+    syncLoading: '読み込んでいます…',
+    syncLoadFailed: '一覧を読めませんでした。',
+    syncExpired: 'この端末のサインインが切れています。保存と一覧にはサインインし直してください。',
+    syncReauth: 'SIGN IN',
+    syncReauthConfirm: 'まだ保存していないログがあります。サインインのためにこの画面を離れると消えます。\n\n続けますか？',
+    syncDeleteRun: (when: string) => `${when} のイメージとログをクラウドから削除します。元に戻せません。\n\n削除しますか？`,
+    syncDeleteError: (when: string) => `${when} の失敗の記録をクラウドから削除します。元に戻せません。\n\n削除しますか？`,
+    syncPractice: 'PRACTICE',
+    privacy: 'PRIVACY',
+
     // --- generic -----------------------------------------------------------------------------
     retry: 'もう一度',
     back: '戻る',
@@ -465,9 +487,12 @@ const EN: typeof JA = {
         + 'It costs one flash-counter slot. That cannot be undone.\n\n'
         + 'Go ahead?',
     saveLog: 'Save log',
-    uploadDone: (bytes) =>
-        `Sent (image ${Math.round(bytes / 1024).toLocaleString()} KB gzipped).`,
+    uploadDone: (bytes, account) =>
+        `Saved${account ? ` to account ${account}` : ''} (image ${Math.round(bytes / 1024).toLocaleString()} KB gzipped).`,
     uploadFailed: (why) => `Could not send: ${why}`,
+    uploadExpired: 'Not sent: the sign-in on this device has lapsed. The image is still on this phone. '
+        + 'Disconnect, then sign in again from the first screen.',
+    uploadTooLarge: 'Too large to send. The image is still on this phone.',
     backupCensored: (start, end, n) =>
         `${n} bytes at 0x${start.toString(16).toUpperCase()}-0x${(end - 1).toString(16).toUpperCase()} `
         + 'are not in this file. The DME substitutes 0xFF for reads of that range, so they are not '
@@ -675,6 +700,22 @@ const EN: typeof JA = {
 
     updateWaiting: 'A newer build is ready. Press UPDATE when you are not mid-transfer.',
     updateApply: 'UPDATE',
+
+    syncAccount: (label) => `Saved to account ${label ?? '—'}`,
+    syncBody: 'Images and logs you uploaded, and the failure records sent on their own. '
+        + 'An image taken out with IMAGE loads as it is in the compare-with-a-file mode of BACKUP.',
+    syncRuns: 'RUNS',
+    syncErrors: 'ERRORS',
+    syncEmpty: 'Nothing yet.',
+    syncLoading: 'Loading…',
+    syncLoadFailed: 'Could not load the list.',
+    syncExpired: 'The sign-in on this device has lapsed. Sign in again to save and to see this list.',
+    syncReauth: 'SIGN IN',
+    syncReauthConfirm: 'There is a log you have not saved. Leaving this screen to sign in will lose it.\n\nContinue?',
+    syncDeleteRun: (when) => `Delete the image and log from ${when} from the cloud? This cannot be undone.`,
+    syncDeleteError: (when) => `Delete the failure record from ${when} from the cloud? This cannot be undone.`,
+    syncPractice: 'PRACTICE',
+    privacy: 'PRIVACY',
 
     hubPickOne: 'Choose one.',
     hubNothingToConvert: 'There is nothing here to convert.',

@@ -49,7 +49,13 @@ import {
     UsbCancelled, LinkNotSupported, type OpenLink,
 } from './usb';
 import { linkBlock } from './platform';
-import { uploadRun, uploadSupported } from './upload';
+import { UploadError, uploadRun, uploadSupported } from './upload';
+import {
+    canSync, currentGate, recordDiagnostic, flushDiagnostics, reauthHref,
+    listRuns, listDiagnostics, deleteRun, deleteDiagnostic, fetchRunPart, fetchDiagnosticLog, cloudFilename,
+    type CloudRun, type CloudDiagnostic, type GateState,
+} from './sync';
+import { CloudPanel, when } from './cloud';
 import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
 
 
@@ -155,6 +161,18 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     const [ecuMatch, setEcuMatch] = useState<{ same: boolean; reason: string } | null>(null);
     const [updateWaiting, setUpdateWaiting] = useState(false);
     /**
+     * The owner gate's view of this browser (preview only). `unknown` - offline, m3 down - is not
+     * `expired`: the app works on and offers nothing, rather than sending anyone to a sign-in page
+     * that cannot load.
+     */
+    const [gate, setGate] = useState<{ state: GateState; label: string | null }>({ state: 'unknown', label: null });
+    const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
+    /** The owner's saved runs and error records, as last listed. Null until a listing succeeds. */
+    const [cloud, setCloud] = useState<{
+        runs: CloudRun[] | null; errors: CloudDiagnostic[] | null; loading: boolean; failed: boolean;
+    }>({ runs: null, errors: null, loading: false, failed: false });
+    const [cloudPending, setCloudPending] = useState<string | null>(null);
+    /**
      * The factory software the program stage writes, and which of its six builds was chosen.
      *
      * SP-DATEN rather than a prepared 1 MiB blob: the six CSL variants differ only in calibration,
@@ -218,6 +236,29 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     useEffect(() => { setLinkBusy(connected || busy !== null); }, [connected, busy]);
 
     const log = useCallback((line: string) => setEvents((prev) => [...prev, line]), []);
+
+    /**
+     * Whether this is the preview build - the only one that syncs anything. Read once: the variant
+     * is written into the page by the build and cannot change under it.
+     */
+    const preview = useMemo(() => canSync(), []);
+
+    /**
+     * A failure, recorded where it happened. Preview only, silent, and unable to throw - see
+     * `recordDiagnostic`. The log is read through a ref so that recording a failure never makes
+     * every operation's callback depend on the log, which changes on every line.
+     */
+    const eventsRef = useRef<readonly string[]>([]);
+    useEffect(() => { eventsRef.current = events; }, [events]);
+    const report = useCallback((stage: string, error: unknown) => {
+        recordDiagnostic({
+            stage,
+            error: typeof error === 'string' ? error : message(error),
+            log: eventsRef.current,
+            practice,
+            ident: ident?.ident,
+        });
+    }, [practice, ident]);
 
     /**
      * Whether this screen was backgrounded while something was running.
@@ -514,7 +555,9 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 // Reached only if a caller got past the disabled control. Say the same thing the
                 // LINK screen says, rather than the transport's internal wording.
                 setNotice({ kind: 'error', text: c.linkBlockedNotAndroid });
+                report('CONNECT', error);
             } else {
+                report('CONNECT', error);
                 // The transport's own message is raw English engineering text ("No bulk endpoint
                 // pair on this USB device") and the notice is a two-line clamp - interpolating it
                 // clipped the actionable half. It goes to the log, which scrolls.
@@ -524,7 +567,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         } finally {
             setBusy(null);
         }
-    }, [c, log]);
+    }, [c, log, report]);
 
     /**
      * Enter practice: the same session class, pointed at a simulated DME.
@@ -579,6 +622,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 log(`LOGIN refused: ${found.loginError ?? 'no reason given'}`);
                 log('STOPPING: the full-space read needs the access bit cmd 0x90 grants');
                 setNotice({ kind: 'error', text: c.identLoginRefused });
+                report('IDENT', `login refused: ${found.loginError ?? 'no reason given'}`);
                 return;
             }
 
@@ -589,10 +633,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             log(`SA0 slave ${slave.flavour} crc ${slave.crc.stored.toString(16)} ${slave.crc.valid ? 'ok' : 'BAD'}`);
         } catch (error) {
             setNotice({ kind: 'error', text: message(error) });
+            report('IDENT', error);
         } finally {
             setBusy(null);
         }
-    }, [c, log]);
+    }, [c, log, report]);
 
     /**
      * Capture, optionally at 125000.
@@ -680,9 +725,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             } else {
                 setEcuMatch(null);
                 setNotice({ kind: 'error', text: c.backupMismatch(result.differingOffsets.length) });
+                report(boost ? 'FAST ENTRY' : 'BACKUP', `two passes disagree at ${result.differingOffsets.length} offset(s)`);
             }
         } catch (error) {
             setNotice({ kind: 'error', text: message(error) });
+            report(boost ? 'FAST ENTRY' : 'BACKUP', error);
         } finally {
             setBusy(null);
         }
@@ -690,7 +737,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     // other dependencies last changed, so switching between two-pass and compare-with-a-file on
     // screen changed nothing about what BACKUP actually did - reported from a car, and exactly the
     // class of bug the wizard module was extracted to stop.
-    }, [ident, backupMode, backup, c, log, practice, showProgress]);
+    }, [ident, backupMode, backup, c, log, practice, showProgress, report]);
 
     /**
      * Take a saved capture. It is not a backup of anything until the DME agrees with it.
@@ -789,10 +836,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         } catch (error) {
             setEcuMatch({ same: false, reason: message(error) });
             setNotice({ kind: 'error', text: message(error) });
+            report('VERIFY', error);
         } finally {
             setBusy(null);
         }
-    }, [backup, c, log, showProgress]);
+    }, [backup, c, log, showProgress, report]);
 
     /**
      * The one write path.
@@ -940,10 +988,12 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             else await execute();
         } catch (error) {
             if (error instanceof WriteLockedError) {
+                // The build doing what it says, not a failure: nothing to record.
                 setNotice({ kind: 'warn', text: c.lockedTitle });
                 log(`REFUSED: ${error.message}`);
             } else {
                 setNotice({ kind: 'error', text: message(error) });
+                report(`RUN ${stage.kind.toUpperCase()}`, error);
             }
             return;
         } finally {
@@ -957,7 +1007,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         setAcked(false);
         await identify();
         setStep('PLAN');
-    }, [stage, backup, programSource, practice, speed, c, log, showProgress, identify, cslSa0]);
+    }, [stage, backup, programSource, practice, speed, c, log, showProgress, identify, cslSa0, report]);
 
     /**
      * Send this session to the project's D1, for judging afterwards.
@@ -1005,14 +1055,25 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
 
             log(`UPLOADED ${result.id}: image ${(result.imageBytes / 1024).toFixed(0)} KB gz,`
                 + ` log ${(result.logBytes / 1024).toFixed(0)} KB gz`);
-            setNotice({ kind: 'ok', text: c.uploadDone(result.imageBytes) });
+            setNotice({ kind: 'ok', text: c.uploadDone(result.imageBytes, gate.label) });
+            flushDiagnostics();
         } catch (error) {
             log(`UPLOAD failed: ${message(error)}`);
-            setNotice({ kind: 'error', text: c.uploadFailed(message(error)) });
+            if (error instanceof UploadError && error.expired) {
+                // Said as what it is. The capture is untouched, and signing in again is offered on
+                // the first screen, where leaving the page cannot cost a link.
+                setGate((g) => ({ ...g, state: 'expired' }));
+                setNotice({ kind: 'error', text: c.uploadExpired });
+            } else if (error instanceof UploadError && error.tooLarge) {
+                setNotice({ kind: 'error', text: c.uploadTooLarge });
+            } else {
+                setNotice({ kind: 'error', text: c.uploadFailed(message(error)) });
+                report('UPLOAD', error);
+            }
         } finally {
             setBusy(null);
         }
-    }, [backup, events, ident, practice, wentHidden, c, log]);
+    }, [backup, events, ident, practice, wentHidden, c, log, gate.label, report]);
 
     /** The operator says the ignition has been cycled. Resolves the promise the run is waiting on. */
     const confirmPowerCycle = useCallback(() => {
@@ -1076,10 +1137,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             ingestSpDaten(read, 'bundled');
         } catch (error) {
             setNotice({ kind: 'error', text: message(error) });
+            report('SP-DATEN', error);
         } finally {
             setBusy(null);
         }
-    }, [ingestSpDaten]);
+    }, [ingestSpDaten, report]);
 
     /**
      * Read the community-patched program and prove it is the patch this tool knows.
@@ -1112,10 +1174,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             setProgramChoice('factory');
             setNotice({ kind: 'error', text: message(error) });
             log(`PROGRAM patch REFUSED: ${message(error)}`);
+            report('PATCH', error);
         } finally {
             setBusy(null);
         }
-    }, [spDaten, log]);
+    }, [spDaten, log, report]);
 
     /**
      * Fetch the reference CSL bootloader before the first bootloader stage needs it.
@@ -1134,8 +1197,9 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             log(`SA0 reference loaded, ${bytes.length} bytes`);
         } catch (error) {
             log(`SA0 reference unavailable (${message(error)}); deriving from this ECU only`);
+            report('SA0 REF', error);
         }
-    }, [cslSa0, log]);
+    }, [cslSa0, log, report]);
 
     /** An override, for a package other than the bundled one. */
     const loadSpDatenFiles = useCallback(async (files: FileList) => {
@@ -1189,6 +1253,78 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     }, [practice]);
 
     useEffect(() => () => { void linkRef.current?.close(); }, []);
+
+    // --- SYNC (preview only) -----------------------------------------------------------------
+
+    // The gate's view, asked on launch and again whenever the network comes back. Never in
+    // production: `currentGate` returns without a request there, but the listener is not added
+    // either.
+    useEffect(() => {
+        if (!preview) return;
+        const check = () => { void currentGate().then(setGate); };
+        const up = () => { setOnline(true); check(); };
+        const down = () => setOnline(false);
+        check();
+        window.addEventListener('online', up);
+        window.addEventListener('offline', down);
+        return () => {
+            window.removeEventListener('online', up);
+            window.removeEventListener('offline', down);
+        };
+    }, [preview]);
+
+    /** The panel is on the first screen, with nothing connected - see cloud.tsx for why there. */
+    const showCloud = preview && step === 'LINK' && !connected;
+
+    const loadCloud = useCallback(async () => {
+        setCloud((prev) => ({ ...prev, loading: true, failed: false }));
+        const [runs, errors] = await Promise.all([listRuns(), listDiagnostics()]);
+        const expired = runs.expired || errors.expired;
+        if (expired) setGate((g) => ({ ...g, state: 'expired' }));
+        if (runs.ok && errors.ok) flushDiagnostics();
+        setCloud({
+            runs: runs.ok ? runs.data?.runs ?? [] : null,
+            errors: errors.ok ? errors.data?.diagnostics ?? [] : null,
+            loading: false,
+            failed: !expired && !(runs.ok && errors.ok),
+        });
+    }, []);
+
+    useEffect(() => {
+        if (showCloud && gate.state === 'active') void loadCloud();
+    }, [showCloud, gate.state, loadCloud]);
+
+    /** One request for one row at a time; its failure is a notice, never a thrown error. */
+    const cloudAction = useCallback(async (id: string, act: () => Promise<void>) => {
+        setCloudPending(id);
+        try {
+            await act();
+        } catch (error) {
+            setNotice({ kind: 'error', text: message(error) });
+        } finally {
+            setCloudPending(null);
+        }
+    }, []);
+
+    const removeFromCloud = useCallback(async (id: string, remove: (id: string) => ReturnType<typeof deleteRun>) => {
+        const r = await remove(id);
+        if (r.expired) setGate((g) => ({ ...g, state: 'expired' }));
+        if (!r.ok) throw new Error(`DELETE: ${r.status}`);
+        await loadCloud();
+    }, [loadCloud]);
+
+    /**
+     * Sign in again: a same-tab trip through m3 and back to this page.
+     *
+     * Offered only when leaving the page can cost nothing on the car - online, no link, nothing
+     * running - and even then a log that has not been saved is named before it is lost.
+     */
+    const reauthOffered = preview && gate.state === 'expired' && online && !connected && busy === null;
+    const reauth = useCallback(() => {
+        const unsaved = backup !== null || events.length > 1;
+        if (unsaved && !window.confirm(c.syncReauthConfirm)) return;
+        window.location.assign(reauthHref());
+    }, [backup, events, c]);
 
     // --- the hub, derived --------------------------------------------------------------------
     const hub: HubConfig = useMemo((): HubConfig => {
@@ -1471,6 +1607,33 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             {/* The question. The only scrolling region. */}
             <div className="h-[61.8%] min-h-0 overflow-y-auto">
                 {step === 'LINK' && <LinkStep blocked={blocked} installed={installed} />}
+                {showCloud && (
+                    <CloudPanel
+                        account={gate.label}
+                        expired={gate.state === 'expired'}
+                        onReauth={reauthOffered ? reauth : null}
+                        runs={cloud.runs}
+                        errors={cloud.errors}
+                        loading={cloud.loading}
+                        failed={cloud.failed}
+                        pending={cloudPending}
+                        onImage={(run) => void cloudAction(run.id, async () =>
+                            downloadBytes(await fetchRunPart(run.id, 'image'), cloudFilename(run, 'image')))}
+                        onLog={(run) => void cloudAction(run.id, async () =>
+                            downloadBytes(await fetchRunPart(run.id, 'log'), cloudFilename(run, 'log')))}
+                        onDeleteRun={(run) => {
+                            if (!window.confirm(c.syncDeleteRun(when(run.created_at)))) return;
+                            void cloudAction(run.id, () => removeFromCloud(run.id, deleteRun));
+                        }}
+                        onErrorLog={(record) => void cloudAction(record.id, async () => downloadLog(
+                            (await fetchDiagnosticLog(record.id)).split('\n'),
+                            cloudFilename({ created_at: record.created_at, verified: null, note: record.practice === 1 ? 'PRACTICE' : null }, 'log')))}
+                        onDeleteError={(record) => {
+                            if (!window.confirm(c.syncDeleteError(when(record.created_at)))) return;
+                            void cloudAction(record.id, () => removeFromCloud(record.id, deleteDiagnostic));
+                        }}
+                    />
+                )}
                 {step === 'IDENT' && <IdentStep view={ident} practice={practice} />}
                 {step === 'BACKUP' && (
                     <BackupStep
@@ -1621,7 +1784,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                     {/* Offered whether or not the two passes agreed: a capture that disagreed with
                         itself is the MOST interesting one to look at afterwards, and refusing to
                         send it would lose the only evidence of the failure. */}
-                    {!busy && backup && uploadSupported() && (
+                    {!busy && backup && preview && uploadSupported() && (
                         <SubAction label={c.uploadRun} onClick={() => void uploadSession()} />
                     )}
                     {/* Only while nothing is running and nothing is connected - the whole row is
