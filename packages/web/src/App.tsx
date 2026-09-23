@@ -57,6 +57,7 @@ import {
 } from './sync';
 import { CloudPanel, when } from './cloud';
 import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
+import { bundledNames } from '../bundled-files.mjs';
 
 
 interface BackupResult {
@@ -90,15 +91,18 @@ export interface AppProps {
 /**
  * The factory files bundled with the app, by name.
  *
- * A list rather than a glob because the service worker precaches these exact paths - a file added
- * to `public/spdaten/` and not added here would be fetched over the network and fail offline, in
- * the one place this app is meant to work.
+ * A list rather than a glob because the service worker precaches these exact paths. The list is
+ * `REQUIRED_BINARIES` (bundled-files.mjs), the same one the build precaches and allows - a file in
+ * `public/spdaten/` that is not on it fails the build rather than being served.
  */
-const BUNDLED_SP_DATEN = [
-    '7837340A.0PA',
-    'A7837329.0DA', 'A7837331.0DA', 'A7837333.0DA',
-    'A7837335.0DA', 'A7837337.0DA', 'A7837339.0DA',
-];
+const BUNDLED_SP_DATEN = bundledNames('spdaten');
+
+/** The one file the list names in a folder. The list is a constant; this only reads it. */
+function theBundled(dir: 'program' | 'bootloader'): string {
+    const [name, ...more] = bundledNames(dir);
+    if (!name || more.length) throw new Error(`bundled-files.mjs must name exactly one ${dir} file`);
+    return name;
+}
 
 /**
  * The community-patched program, bundled on the same terms and precached the same way.
@@ -107,7 +111,7 @@ const BUNDLED_SP_DATEN = [
  * already loaded, so it cannot be read before that is - and a file that does not verify never
  * becomes the program: `program` below falls back to the factory one and the failure is shown.
  */
-const BUNDLED_PATCHED_PROGRAM = '211325000401PD31_Community_Patch_v1.bin';
+const BUNDLED_PATCHED_PROGRAM = theBundled('program');
 
 /**
  * The CSL bootloader itself, 32 KiB: master SA0 then slave SA0.
@@ -118,7 +122,7 @@ const BUNDLED_PATCHED_PROGRAM = '211325000401PD31_Community_Patch_v1.bin';
  * has already turned up carrying six bytes at slave 0x3FE4 that no reference image of either
  * flavour has, in a region the slave CRC does not cover.
  */
-const BUNDLED_CSL_SA0 = 'csl-sa0.bin';
+const BUNDLED_CSL_SA0 = theBundled('bootloader');
 
 export default function App({ onUpdateAvailable }: AppProps = {}) {
     const c = t();

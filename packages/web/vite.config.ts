@@ -5,6 +5,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { REQUIRED_BINARIES } from './bundled-files.mjs';
+import { strayBundledFiles } from './bundled-files-check.mjs';
 
 /**
  * A build identifier the operator can read off the screen.
@@ -120,27 +122,24 @@ const linkedIcons = (html: string): string[] =>
 // --- the offline set ------------------------------------------------------------------------
 
 /**
- * The factory files, the patched program and the CSL bootloader, as they are in `public/`.
+ * The factory files, the patched program and the CSL bootloader, as `REQUIRED_BINARIES` names them
+ * (bundled-files.mjs) - not whatever happens to be in `public/`.
  *
  * None of them is in the repository (THIRD-PARTY-NOTICES.md §2). A build without them still
  * builds - the app reports the missing file when it needs it - but it says so, and the deploy
- * script refuses a preview that does not carry them.
+ * script refuses a preview that does not carry them. Anything else in those folders fails the
+ * build (`closeBundle`): Vite copies `public/` whole, and a stray ECU dump would otherwise ship.
+ *
+ * All of them are precached: BMW's factory files (~645 KB gzipped) so the version choice works in
+ * a garage with no signal, and the community-patched program and the bootloader on the same
+ * argument - the operator who wants them is standing at the car, not choosing them at a desk.
  */
 function bundledBinaries(warn: (m: string) => void): string[] {
     const found: string[] = [];
-    const take = (dir: string, pattern: RegExp) => {
-        const abs = here(`./public/${dir}`);
-        if (!existsSync(abs)) { warn(`public/${dir}/ is missing (not in the repository; see THIRD-PARTY-NOTICES.md)`); return; }
-        for (const f of readdirSync(abs)) if (pattern.test(f)) found.push(`/${dir}/${f}`);
-    };
-    // BMW's factory files, bundled so the version choice works in a garage with no signal.
-    // ~645 KB gzipped, which is the whole reason they are precached rather than fetched on demand:
-    // the launch that matters is the offline one.
-    take('spdaten', /\.(0PA|0DA)$/i);
-    // The community-patched program, precached on the same argument: the operator who wants it is
-    // standing at the car, not choosing it at their desk.
-    take('program', /\.bin$/i);
-    take('bootloader', /\.bin$/i);
+    for (const f of REQUIRED_BINARIES) {
+        if (existsSync(here(`./public/${f}`))) found.push(`/${f}`);
+        else warn(`public/${f} is missing (not in the repository; see THIRD-PARTY-NOTICES.md)`);
+    }
     return found;
 }
 
@@ -214,6 +213,8 @@ function identityAndServiceWorker(): Plugin {
             const dist = (p: string) => join(outDir, p === '/' ? 'index.html' : p.slice(1));
 
             for (const p of precache) if (!existsSync(dist(p))) problems.push(`precached but not in the build: ${p}`);
+            // Only the listed binaries may be served from the bundled folders (bundled-files.mjs).
+            for (const stray of strayBundledFiles(outDir)) problems.push(`${stray}; remove it from packages/web/public/ (only REQUIRED_BINARIES ship)`);
 
             const html = readFileSync(dist('/'), 'utf8');
             const variantMeta = [...html.matchAll(/<meta\s+name="app-variant"\s+content="([^"]*)"/gi)].map((m) => m[1]);

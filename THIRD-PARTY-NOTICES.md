@@ -45,6 +45,11 @@ any API at all.
 the pre-commit hook) refuses a commit that tracks any `.bin`, `.0pa`, `.0da` file or
 anything that looks like a real VIN.
 
+Because git does not see these three folders, the build does instead: they may hold exactly
+the files `REQUIRED_BINARIES` names (`packages/web/bundled-files.mjs`) plus a short
+`README.txt` each, and the build (and `npm run deploy`) fails on anything else in them - so a
+real ECU dump left in `public/program/` never ships to anyone.
+
 ### 2.1 BMW SP-DATEN — `packages/web/public/spdaten/`
 
 `7837340A.0PA` (the CSL program, 0401) and the six CSL calibrations `A7837329.0DA`,

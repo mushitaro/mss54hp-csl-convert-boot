@@ -26,9 +26,11 @@
 //      would ask it. If it cannot be asked (offline, rate-limited, GitHub down), that is a refusal
 //      too: not verified is not the same as public.
 //   6. The build (M_VARIANT=preview) fails its own checks (packages/web/vite.config.ts), carries a
-//      sync-token meta, stamps a different or dirty sha, or lacks the BMW files the app needs
+//      sync-token meta, stamps a different or dirty sha, lacks the BMW files the app needs
 //      offline - they are not in the repository and have to be supplied locally
-//      (THIRD-PARTY-NOTICES.md §2).
+//      (THIRD-PARTY-NOTICES.md §2) - or carries anything else in dist/{spdaten,program,bootloader}.
+//      Those folders are git-ignored, so only this list (packages/web/bundled-files.mjs) stands
+//      between a real ECU dump dropped there and every owner's phone.
 //
 // Then it runs wrangler from the repository root - Pages takes functions/ from the working
 // directory, not from the directory being uploaded - with --branch main, so every deployment
@@ -38,6 +40,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// What the app fetches from its own origin and precaches; none of it is in git. The one list, shared
+// with the app and the Vite plugin.
+import { REQUIRED_BINARIES } from '../packages/web/bundled-files.mjs';
+import { strayBundledFiles } from '../packages/web/bundled-files-check.mjs';
 
 const PROJECT = 'mss54hp-csl-convert-boot-preview';
 const PUBLIC_BRANCH = 'main';
@@ -45,14 +51,6 @@ const REPO = 'mushitaro/mss54hp-csl-convert-boot';
 /** origin, over SSH or HTTPS; nothing else is the public repository. */
 const REPO_REMOTE = /(^|[@/])github\.com[:/]mushitaro\/mss54hp-csl-convert-boot(\.git)?\/?$/;
 const DIST = 'packages/web/dist';
-/** What the app fetches from its own origin and precaches; none of it is in git. */
-const REQUIRED_BINARIES = [
-    'spdaten/7837340A.0PA',
-    'spdaten/A7837329.0DA', 'spdaten/A7837331.0DA', 'spdaten/A7837333.0DA',
-    'spdaten/A7837335.0DA', 'spdaten/A7837337.0DA', 'spdaten/A7837339.0DA',
-    'program/211325000401PD31_Community_Patch_v1.bin',
-    'bootloader/csl-sa0.bin',
-];
 
 const CHECK_ONLY = process.argv.includes('--check');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -148,6 +146,8 @@ const dist = path.join(root, DIST);
 for (const f of REQUIRED_BINARIES) {
     if (!fs.existsSync(path.join(dist, f))) refuse(`${DIST}/${f} is missing. Supply it locally (THIRD-PARTY-NOTICES.md §2); the app needs it offline.`);
 }
+const strays = strayBundledFiles(dist);
+if (strays.length) refuse(`the build serves files that are not on REQUIRED_BINARIES (packages/web/bundled-files.mjs):\n  ${strays.join('\n  ')}`);
 const htmls = fs.readdirSync(dist).filter((f) => f.endsWith('.html'));
 for (const f of htmls) {
     if (/<meta\s+name="sync-token"/i.test(fs.readFileSync(path.join(dist, f), 'utf8'))) refuse(`${DIST}/${f} carries a sync-token meta.`);
