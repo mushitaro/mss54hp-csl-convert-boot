@@ -1,0 +1,4 @@
+#!/bin/sh
+# Nothing that must not be published reaches a commit (THIRD-PARTY-NOTICES.md). Installed by
+# `npm run hooks:install`, which points core.hooksPath here.
+exec node scripts/check-public-tree.mjs --staged

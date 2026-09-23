@@ -20,19 +20,36 @@
  * explicit control. A capture leaves the phone only when its owner taps UPLOAD, and it is filed
  * under the m3 account the owner gate signed in; there is no token, in the bundle or anywhere else.
  *
+ * ## Which project this is
+ *
+ * The owners' preview: `mss54hp-csl-convert-boot-preview`, the only place this tool is served. The
+ * whole origin - page, bundle, service worker, the BMW files the app carries - is behind the owner
+ * gate (functions/_middleware.ts). There is no production and no staging for this tool.
+ *
+ * `name` must equal the Pages project: wrangler applies the D1 binding below only to a deployment
+ * whose --project-name matches it, and says nothing when it does not. `npm run deploy`
+ * (scripts/deploy.mjs) reads the name from here rather than taking it as an argument, pins
+ * --branch main, and refuses to ship anything that is not already public on GitHub.
+ *
+ * The old project `mss54hp-csl-boot` (ungated, with the retired shared token in its bundle) is
+ * replaced by this one and is to be deleted, not redeployed.
+ *
  * ## Setup, once
  *
  *   npx wrangler login
- *   npx wrangler pages project create mss54hp-csl-boot --production-branch main
- *   npx wrangler d1 create mss54hp-boot-runs        # copy database_id in below
- *   npm run db:migrate:remote
- *   npx wrangler pages secret put UPLOAD_TOKEN --project-name mss54hp-csl-boot
+ *   npx wrangler pages project create mss54hp-csl-convert-boot-preview --production-branch main
+ *   #   then Settings → Runtime → Fail closed, so an exhausted Functions quota serves nothing
+ *   npx wrangler d1 export mss54hp-boot-runs --remote --output <outside the repo>/runs-before.sql
+ *   npm run db:migrate:remote                  # 0002: owner column + trigger, diagnostics table
+ *   # in tsunagi-m3, which pipes M3_CLIENT_SECRET into this project without printing it:
+ *   npm run access:client -- --id boot-preview --name "MSS54HP CSL CONVERT /// BOOT — PREVIEW" \
+ *     --origin https://mss54hp-csl-convert-boot-preview.pages.dev --project mss54hp-csl-convert-boot-preview
  *
  * Then `npm run deploy` for every build after that.
  */
 {
     "$schema": "node_modules/wrangler/config-schema.json",
-    "name": "mss54hp-csl-boot",
+    "name": "mss54hp-csl-convert-boot-preview",
     "pages_build_output_dir": "packages/web/dist",
 
     // Pinned rather than tracking "latest". A runtime that changes under a tool that flashes an

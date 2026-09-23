@@ -14,11 +14,13 @@
     "lint": "npx eslint packages/web/src",
     "icons": "node tools/icons/make_icons.mjs",
     "preview": "vite preview --config packages/web/vite.config.ts packages/web",
-    "deploy": "npm run build && npx wrangler pages deploy",
+    "deploy": "node scripts/deploy.mjs",
     "db:migrate:local": "npx wrangler d1 migrations apply mss54hp-boot-runs --local",
     "db:migrate:remote": "npx wrangler d1 migrations apply mss54hp-boot-runs --remote",
-    "runs": "npx wrangler d1 execute mss54hp-boot-runs --remote --command \"SELECT id, created_at, ident, verified, differing_count, censored_blank, logged_in, elapsed_seconds FROM runs ORDER BY created_at DESC LIMIT 20\"",
-    "gate:verify": "node scripts/gate-verify.mjs --functions functions --client packages/web/src/owner-sync.ts"
+    "runs": "npx wrangler d1 execute mss54hp-boot-runs --remote --command \"SELECT id, owner, created_at, ident, verified, differing_count, censored_blank, logged_in, elapsed_seconds FROM runs ORDER BY created_at DESC LIMIT 20\"",
+    "gate:verify": "node scripts/gate-verify.mjs --functions functions --client packages/web/src/owner-sync.ts",
+    "check:public": "node scripts/check-public-tree.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
