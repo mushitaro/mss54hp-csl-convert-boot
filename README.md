@@ -10,7 +10,7 @@ TSUNAGI ///M — E46 M3 の **MSS54HP DME** を、標準プログラムから **
 
 ```bash
 npm install
-npm test           # 316 tests
+npm test           # 手元に BMW のファイルが無ければ、要るテストは skip
 npx tsc --noEmit
 npm run gen:region-table   # 実イメージから region_table を再生成
 ```
@@ -27,6 +27,43 @@ m3.tsunagi.app のアカウントで入り（`owner_preview` の権利が要り�
 **このリポジトリに無いもの**と、その理由と入手先は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) の §2 にあります。
 BMW の SP-DATEN、CSL のブートローダ、Community Patch のプログラム、実車のダンプです。
 それらが無くても `npm test` は通ります。要るテストは skip になります。
+
+### 手元で動かす
+
+```bash
+npm install
+npm run hooks:install    # コミットの前に check-public-tree を走らせる
+npm run dev              # 画面だけ。/api とゲートは無い
+```
+
+ゲートと SYNC まで含めて動かすときは、`wrangler pages dev` で。`.dev.vars`（git には入りません）に:
+
+```
+M3_CLIENT_SECRET=<32 文字以上の任意の値>
+GATE_DEV_ACCOUNT=<任意の UUID>     # m3 を通さずに、このアカウントとして入る
+```
+
+```bash
+npm run db:migrate:local
+M_VARIANT=preview npm run build
+npx wrangler pages dev packages/web/dist --port 8789
+```
+
+`GATE_DEV_*` は localhost と 127.0.0.1 でだけ効き、それ以外のホストでは無視されます。
+`M_VARIANT=preview` を付けないビルドは本番の身元（app-variant が空）で、SYNC は一切の要求を出しません。
+
+### 配信
+
+`npm run deploy`（`scripts/deploy.mjs`）。プロジェクトは `wrangler.jsonc` の `name`
+（`mss54hp-csl-convert-boot-preview`）で、`--branch main` に固定です。次のときは出さずに止まります。
+
+- ゲート（`functions/_middleware.ts`）が無い、`npm run gate:verify` か `check-public-tree` が通らない
+- 作業ツリーが汚れている、`main` でない、**GitHub の `origin/main` と HEAD が一致しない**
+  （プレビューとして配るものは、公開されたソースから作ったものだけ）
+- preview ビルドの検査が通らない、BMW のファイル（§2）が `dist/` に無い
+
+`npm run deploy -- --check` は、関門とビルドだけを走らせて止まります。
+初回の準備（Pages プロジェクト、Fail closed、D1 の移行、`M3_CLIENT_SECRET`）は `wrangler.jsonc` の冒頭にあります。
 
 ---
 
@@ -345,14 +382,13 @@ docs/bdm-tool.md             自作 BDM ツールの設計。既存のフラッ�
   `ecu/10FLASH.prg` と `data/MSS54/*.0PA|.0DA`。
 - 設計は skill `tsunagi-m-design`、破壊的経路の規律は同 `references/link-measurement-and-safety.md`。
 
-## UI (Android / WebUSB) — https://mss54hp-csl-boot.pages.dev
+## UI (Android / WebUSB) — https://mss54hp-csl-convert-boot-preview.pages.dev（プレビュー版）
 
 ```bash
 npm run dev        # 開発サーバ (Service Worker は登録されない)
 npm run build      # packages/web/dist へ静的出力
 npm run preview    # ビルド済みを配信。SW / オフラインの確認はこちら
-npm run icons      # アイコン一式を ///M マークから再生成
-npm run deploy     # build して Cloudflare Pages へ
+npm run deploy     # 関門を通して、preview を Cloudflare Pages へ（上の「配信」）
 npm run typecheck
 ```
 
@@ -860,7 +896,15 @@ Android の Chrome で開いて「ホーム画面に追加」。**https が必�
 |---|---|---|
 | ナビゲーション | network-first (3 秒でフォールバック) | 中身は安全規則そのもの。工具箱に眠っていた端末が古い規則で走ってはいけない |
 | `/assets/*` | cache-first | 内容ハッシュ名なので陳腐化しようがない |
+| `/spdaten` `/program` `/bootloader` | cache-first | ビルドごとに固定。ネットワークが HTML（Pages の SPA フォールバック）を返したら保存せず 404 |
+| `/_gate/*` `/api/*` | 触らない | サインインの往復と API をキャッシュから答えない。ナビゲーションより先に除外 |
 | 更新 | `skipWaiting` **しない** | フルバックアップは 30 分。走っているページの下でワーカーを差し替える価値は無い |
+
+更新の取得は、全ファイルが 2xx・同一オリジン・ゲートを経由しない・拡張子どおりの型、のときだけ成功します。
+一つでも外れたら何も保存せず、今のビルドのままです。ケーブル接続中と操作中は、更新のダウンロード自体をしません。
+
+ランチャーのアイコンは M ICON の `modification`（`tsunagi-m3/scripts/m-icons.mjs` で `public/icons/` に書き出し）。
+プレビュー版のビルドは dev セットを付けます。`npm run icons` が作るのはアプリの中のマークで、ランチャーには使いません。
 
 新しいビルドが待機したらハブの下に `UPDATE` が出ます。**「再読み込みしてください」ではありません** —
 同一タブの再読み込みではクライアントが解放されず、待機中のワーカーは待機したまま、古いビルドで
