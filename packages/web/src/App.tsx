@@ -55,7 +55,7 @@ import {
     listRuns, listDiagnostics, deleteRun, deleteDiagnostic, fetchRunPart, fetchDiagnosticLog, cloudFilename,
     type CloudRun, type CloudDiagnostic, type GateState,
 } from './sync';
-import { CloudPanel, when } from './cloud';
+import { CloudPanel, PrivacyHeaderLink, when } from './cloud';
 import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
 import { bundledNames } from '../bundled-files.mjs';
 
@@ -1545,9 +1545,13 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 />
                 <Led state={linkState} />
                 <Wordmark />
+                {/* PRIVACY (preview only - the build that sends anything), ahead of the readouts
+                    so it leads the right-hand cluster as tsunagi-m-chrome orders it. Here rather
+                    than only in the SYNC panel, which exists on one screen with no cable in. */}
+                {preview && <div className="ml-auto flex shrink-0 items-center"><PrivacyHeaderLink /></div>}
                 {/* Identity readouts, mono, right-aligned. The build id is here so the answer to
                     "which version is on that phone" is on the phone rather than in a changelog. */}
-                <div className="ml-auto flex shrink-0 flex-col items-end gap-0.5 leading-none">
+                <div className={`${preview ? 'ml-3' : 'ml-auto'} flex shrink-0 flex-col items-end gap-0.5 leading-none`}>
                     {/* One readout, three mutually exclusive facts. PRACTICE outranks the lock
                         because in practice the lock is not what is stopping anything - there is no
                         ECU on the other end at all, and that is the more important thing to know. */}

@@ -11,6 +11,7 @@
  * that describe no machine state.
  */
 import type { ReactNode } from 'react';
+import { Shield } from 'lucide-react';
 import type { CloudDiagnostic, CloudRun } from './sync';
 import { lang, t } from './copy';
 
@@ -133,6 +134,33 @@ export function PrivacyLink(): ReactNode {
             className="flex min-h-[44px] items-center px-2 text-[9px] font-bold uppercase tracking-widest text-slate-500 active:text-slate-300"
         >
             {t().privacy}
+        </a>
+    );
+}
+
+/**
+ * The same PRIVACY, as the header carries it: the first of tsunagi-m-chrome's fixed links (this app
+ * has only that one - no repository link, credits or guide of its own, and no menu sheet, since the
+ * whole app is the phone layout). An icon at w-5 h-5 with its destination in `title`, neutral grey,
+ * inside a 44 px tap target.
+ *
+ * It is in the header so that it is reachable from every screen and with the cable in, not only
+ * from the SYNC panel on the LINK screen. That is safe while connected for the reason PrivacyLink
+ * gives: it always opens a new tab. Preview build only - App renders it behind `canSync()`, the same
+ * bit as the SYNC it describes.
+ */
+export function PrivacyHeaderLink(): ReactNode {
+    const label = t().privacy;
+    return (
+        <a
+            href={privacyHref()}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={label}
+            aria-label={label}
+            className="-mx-3 flex h-[44px] w-[44px] shrink-0 items-center justify-center text-slate-500 transition-colors hover:text-slate-300 active:text-slate-300"
+        >
+            <Shield className="h-5 w-5" aria-hidden="true" />
         </a>
     );
 }
