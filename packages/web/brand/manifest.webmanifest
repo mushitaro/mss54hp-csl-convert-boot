@@ -12,9 +12,9 @@
   "lang": "ja",
   "categories": ["utilities"],
   "icons": [
-    { "src": "/icons/modification-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/modification-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/modification-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
-    { "src": "/icons/modification-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "/icons/migration-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/migration-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/migration-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/migration-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

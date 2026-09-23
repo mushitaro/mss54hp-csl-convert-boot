@@ -906,7 +906,8 @@ Android の Chrome で開いて「ホーム画面に追加」。**https が必�
 更新の取得は、全ファイルが 2xx・同一オリジン・ゲートを経由しない・拡張子どおりの型、のときだけ成功します。
 一つでも外れたら何も保存せず、今のビルドのままです。ケーブル接続中と操作中は、更新のダウンロード自体をしません。
 
-ランチャーのアイコンは M ICON の `modification`（`tsunagi-m3/scripts/m-icons.mjs` で `public/icons/` に書き出し）。
+ランチャーのアイコンは M ICON の `migration`（`tsunagi-m3/scripts/m-icons.mjs` で `public/icons/` に書き出し）。
+DME を CSL のプログラムへ移す道具なので MIGRATION、という運営者の決定（2026-09-23）です。以前の `modification` は取り違えでした。
 プレビュー版のビルドは dev セットを付けます。`npm run icons` が作るのはアプリの中のマークで、ランチャーには使いません。
 
 新しいビルドが待機したらハブの下に `UPDATE` が出ます。**「再読み込みしてください」ではありません** —

@@ -21,11 +21,11 @@ export const onRequest = createGate({
     name: 'MSS54HP CSL CONVERT /// BOOT — PREVIEW',
     publicPaths: [
         '/manifest.webmanifest',
-        '/icons/modification-dev-192.png',
-        '/icons/modification-dev-512.png',
-        '/icons/modification-dev-maskable-192.png',
-        '/icons/modification-dev-maskable-512.png',
-        '/icons/modification-dev-256.png',
-        '/icons/modification-dev-32.png',
+        '/icons/migration-dev-192.png',
+        '/icons/migration-dev-512.png',
+        '/icons/migration-dev-maskable-192.png',
+        '/icons/migration-dev-maskable-512.png',
+        '/icons/migration-dev-256.png',
+        '/icons/migration-dev-32.png',
     ],
 });

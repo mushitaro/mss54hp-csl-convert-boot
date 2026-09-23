@@ -67,11 +67,19 @@ const SHORT_NAME = LABEL ? `${LABEL[0]} ${PRODUCTION.shortName}` : PRODUCTION.sh
 if (SHORT_NAME.length > 12) throw new Error(`short_name "${SHORT_NAME}" is over 12 characters; Android cuts it`);
 
 /**
+ * The M ICON mark this app wears: `migration`, by the operator's decision (2026-09-23) - BOOT moves
+ * the DME onto the CSL program, which is a migration, not a `modification`. The tsunagi-m-release
+ * table still lists `modification -> BOOT`; that row is stale. The files are written by tsunagi-m3's
+ * `node scripts/m-icons.mjs --word migration --out packages/web/public/icons`.
+ */
+const ICON_WORD = 'migration';
+
+/**
  * Production icons to the M ICON dev set (white on black). Every non-production build wears it -
  * maskable included, or a home screen shows a white-ground and a black-ground icon for one app.
  */
 const iconFor = (path: string): string =>
-    LABEL ? path.replace(/^\/icons\/modification-(?!dev-)/, '/icons/modification-dev-') : path;
+    LABEL ? path.replace(new RegExp(`^/icons/${ICON_WORD}-(?!dev-)`), `/icons/${ICON_WORD}-dev-`) : path;
 
 interface ManifestIcon { src: string; sizes?: string; type?: string; purpose?: string }
 interface Manifest { name: string; short_name: string; description?: string; icons: ManifestIcon[] }
