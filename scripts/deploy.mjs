@@ -14,10 +14,15 @@
 //   3. check-public-tree fails. The source of what is served is public; so must the tree be clean.
 //   4. The working tree has changes (untracked CLAUDE.md and .claude/ aside - agent notes, never
 //      tracked). A build from uncommitted files serves source nobody can read.
-//   5. HEAD is not what GitHub has on origin/main. The preview may serve only source that is
-//      public: every build carries its sha in <meta name="build-id">, and that sha has to resolve
-//      on github.com/mushitaro/mss54hp-csl-convert-boot. With no remote yet, it refuses and says
-//      the repository must be pushed first.
+//   5. The source is not public. The preview may serve only source anyone can read: every build
+//      carries its sha in <meta name="build-id">, and that sha has to resolve on
+//      github.com/mushitaro/mss54hp-csl-convert-boot. So origin must BE that repository (any other
+//      remote is refused; with none it says the repository must be pushed first), HEAD must be
+//      origin/main, and GitHub itself must say so to a caller with no credentials: the repository
+//      answers 200 with private:false and the commit answers 200. A private repository would pass
+//      every git check and still hide the source, so the question is asked the way a stranger
+//      would ask it. If it cannot be asked (offline, rate-limited, GitHub down), that is a refusal
+//      too: not verified is not the same as public.
 //   6. The build (M_VARIANT=preview) fails its own checks (packages/web/vite.config.ts), carries a
 //      sync-token meta, stamps a different or dirty sha, or lacks the BMW files the app needs
 //      offline - they are not in the repository and have to be supplied locally
@@ -35,6 +40,8 @@ import { fileURLToPath } from 'node:url';
 const PROJECT = 'mss54hp-csl-convert-boot-preview';
 const PUBLIC_BRANCH = 'main';
 const REPO = 'mushitaro/mss54hp-csl-convert-boot';
+/** origin, over SSH or HTTPS; nothing else is the public repository. */
+const REPO_REMOTE = /(^|[@/])github\.com[:/]mushitaro\/mss54hp-csl-convert-boot(\.git)?\/?$/;
 const DIST = 'packages/web/dist';
 /** What the app fetches from its own origin and precaches; none of it is in git. */
 const REQUIRED_BINARIES = [
@@ -92,6 +99,8 @@ if (!remote) {
     refuse(`this repository has no remote yet. It must be pushed to GitHub (${REPO}, public) before anything built from it is served:\n`
         + '  the preview may serve only source that is public.');
 }
+if (!REPO_REMOTE.test(remote)) refuse(`origin is "${remote}", not github.com/${REPO}. Only that public repository counts as published.`);
+ok(`origin is github.com/${REPO}`);
 try {
     git('fetch', '--quiet', 'origin', PUBLIC_BRANCH);
 } catch (e) {
@@ -101,6 +110,33 @@ const head = git('rev-parse', 'HEAD');
 const published = git('rev-parse', `origin/${PUBLIC_BRANCH}`);
 if (head !== published) refuse(`HEAD ${head.slice(0, 7)} is not origin/${PUBLIC_BRANCH} (${published.slice(0, 7)}). Push first; only public source is served.`);
 ok(`HEAD ${head.slice(0, 7)} is origin/${PUBLIC_BRANCH}`);
+
+/**
+ * GitHub's answer to someone with no credentials: no Authorization header, whatever the
+ * environment holds. A failure to ask at all is a refusal; the caller decides what a status means.
+ */
+async function anonymousGitHub(pathname) {
+    try {
+        const r = await fetch(`https://api.github.com${pathname}`, {
+            headers: { accept: 'application/vnd.github+json', 'user-agent': 'mss54hp-csl-convert-boot-deploy-guard' },
+            redirect: 'manual',
+            signal: AbortSignal.timeout(15_000),
+        });
+        return { status: r.status, body: await r.json().catch(() => null) };
+    } catch (e) {
+        refuse(`could not ask GitHub whether ${REPO} is public (${e?.message ?? e}). Not verified is not the same as public.`);
+    }
+}
+const repoAnswer = await anonymousGitHub(`/repos/${REPO}`);
+if (repoAnswer.status !== 200 || repoAnswer.body?.private !== false || String(repoAnswer.body?.full_name).toLowerCase() !== REPO) {
+    refuse(`GitHub does not show ${REPO} as a public repository to an anonymous caller (HTTP ${repoAnswer.status}, private: ${repoAnswer.body?.private}).`
+        + ' Make it public, or wait out a rate limit; not verified is not the same as public.');
+}
+const commitAnswer = await anonymousGitHub(`/repos/${REPO}/commits/${head}`);
+if (commitAnswer.status !== 200 || commitAnswer.body?.sha !== head) {
+    refuse(`GitHub does not serve commit ${head.slice(0, 7)} of ${REPO} to an anonymous caller (HTTP ${commitAnswer.status}). Push it first.`);
+}
+ok(`github.com/${REPO} is public and serves ${head.slice(0, 7)} without credentials`);
 
 // 6. the build
 if (!run('npm', ['run', '--silent', 'build'], { M_VARIANT: 'preview' })) refuse('the preview build failed.');

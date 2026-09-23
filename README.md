@@ -60,6 +60,9 @@ npx wrangler pages dev packages/web/dist --port 8789
 - ゲート（`functions/_middleware.ts`）が無い、`npm run gate:verify` か `check-public-tree` が通らない
 - 作業ツリーが汚れている、`main` でない、**GitHub の `origin/main` と HEAD が一致しない**
   （プレビューとして配るものは、公開されたソースから作ったものだけ）
+- `origin` が `github.com/mushitaro/mss54hp-csl-convert-boot` でない、または GitHub が
+  認証なしの問い合わせに「公開（`private: false`）で、この HEAD のコミットがある」と答えない。
+  問い合わせができない（圏外、レート制限）ときも止まります
 - preview ビルドの検査が通らない、BMW のファイル（§2）が `dist/` に無い
 
 `npm run deploy -- --check` は、関門とビルドだけを走らせて止まります。
