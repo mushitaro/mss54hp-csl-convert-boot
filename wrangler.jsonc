@@ -1,0 +1,52 @@
+/**
+ * Cloudflare Pages — where the flashing UI is served from.
+ *
+ * ## Why its own project rather than a path on an existing one
+ *
+ * The service worker is scoped to `/` and precaches the whole origin. Two apps sharing an origin
+ * would fight over one cache, and the one that loses serves the other app's stale assets. On a
+ * tool that writes to an ECU that is not a cosmetic problem. A separate origin is not tidiness,
+ * it is the only arrangement that works — the same conclusion the tuner's own config reached.
+ *
+ * ## Why Pages at all, given the app talks to nothing
+ *
+ * It needs **https**: WebUSB is only exposed in a secure context, so the built `index.html` cannot
+ * be opened from a phone's filesystem or served over plain http.
+ *
+ * It now also needs somewhere a POST can land. A real-car session produces a 1 MiB capture and a
+ * log on a phone in a garage, and those are the only evidence of what the DME did; Pages Functions
+ * plus D1 puts an upload endpoint on the SAME origin as the app, which means no CORS preflight on
+ * two bars of signal. Nothing in the conversion depends on it - it is a test instrument behind an
+ * explicit control. A capture leaves the phone only when its owner taps UPLOAD, and it is filed
+ * under the m3 account the owner gate signed in; there is no token, in the bundle or anywhere else.
+ *
+ * ## Setup, once
+ *
+ *   npx wrangler login
+ *   npx wrangler pages project create mss54hp-csl-boot --production-branch main
+ *   npx wrangler d1 create mss54hp-boot-runs        # copy database_id in below
+ *   npm run db:migrate:remote
+ *   npx wrangler pages secret put UPLOAD_TOKEN --project-name mss54hp-csl-boot
+ *
+ * Then `npm run deploy` for every build after that.
+ */
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "mss54hp-csl-boot",
+    "pages_build_output_dir": "packages/web/dist",
+
+    // Pinned rather than tracking "latest". A runtime that changes under a tool that flashes an
+    // ECU, between one session in the garage and the next, is a variable nobody asked for.
+    "compatibility_date": "2026-08-01",
+
+    "d1_databases": [
+        {
+            "binding": "RUNS_DB",
+            "database_name": "mss54hp-boot-runs",
+            // From `npx wrangler d1 create mss54hp-boot-runs` (region APAC). Not a secret - it
+            // names a database, it does not open one; access still needs the account's own
+            // credentials, and every route additionally requires an owner session from the gate.
+            "database_id": "921c8239-2ada-4113-993a-1ed15042a89d"
+        }
+    ]
+}

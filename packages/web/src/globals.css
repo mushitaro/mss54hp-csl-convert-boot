@@ -1,0 +1,180 @@
+/* ---------------------------------------------------------------------------
+   TSUNAGI ///M - drop-in Tailwind v4 theme.
+
+   Paste into your app's global stylesheet (e.g. src/app/globals.css). Requires
+   Tailwind CSS v4 (CSS-first config; no tailwind.config.js). Overriding the
+   built-in colour tokens re-skins every utility class (bg-slate-900,
+   text-blue-400, border-red-500, ...) on-brand automatically - you restyle the
+   whole app from this one file.
+
+   One colour = one meaning:
+     blue           -> primary / interactive / selected / focus / "lean"
+     red            -> danger / destructive / error / "rich" / heat
+     indigo(violet) -> secondary / lineage / reference / diagnostic
+   The accent set is restricted to the ///M tricolour. The functional status
+   layer (OK / busy / caution) is folded into it below rather than borrowing
+   outside hues - see "status layer" and references/color-system.md.
+   --------------------------------------------------------------------------- */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+/* The two variables the @theme block below points at. Next.js supplies these through next/font;
+   this build is Vite, so they are declared here. A dangling var() would not error - font-family
+   would just be invalid at computed-value time and font-sans/font-mono would silently inherit. */
+:root {
+  --font-inter: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-jetbrains-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Roboto Mono', monospace;
+}
+
+:root {
+  --background: #000000;
+  --foreground: #F2F2F5;
+}
+
+/* Fonts. Both must point at variables the app actually defines (Next.js
+   next/font exposes them via className). A dangling var() here makes
+   font-family invalid at computed-value time, so font-sans / font-mono
+   silently fall back to whatever is inherited instead of erroring. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+@theme {
+  /* Neutral ramp - pure-black anchor, cool charcoal (a whisper of blue) */
+  --color-slate-950: #000000;
+  --color-slate-900: #0A0A0D;
+  --color-slate-800: #17171C;
+  --color-slate-700: #2A2A33;
+  --color-slate-600: #4C4C58;
+  --color-slate-500: #70707E;
+  --color-slate-400: #9A9AA8;
+  --color-slate-300: #C6C6CF;
+  --color-slate-200: #DFDFE6;
+  --color-slate-100: #F2F2F5;
+
+  /* Primary - M-blue (#008AC9), hue ~199 */
+  --color-blue-100: #D6EEFA;
+  --color-blue-200: #B6E4F5;
+  --color-blue-300: #6CCBEF;
+  --color-blue-400: #26AEE4;
+  --color-blue-500: #0A9BDB;
+  --color-blue-600: #0883BD;
+  --color-blue-900: #06354E;
+
+  /* Danger - M-red (#F11A22), hue ~358 */
+  --color-red-100: #FBD9DA;
+  --color-red-200: #F9C0C2;
+  --color-red-300: #F87A7F;
+  --color-red-400: #F64A50;
+  --color-red-500: #F11A22;
+  --color-red-600: #D0121A;
+  --color-red-900: #4A0A0D;
+
+  /* Secondary - M-violet (#2B115A), hue ~261, mapped onto the indigo ramp.
+     Lightened for legibility: the logo navy itself is 1.33:1 on black and can
+     only ever be a fill behind light text, never text or an indicator. */
+  --color-indigo-300: #B9A6EE;
+  --color-indigo-400: #9B84E8;
+  --color-indigo-500: #7E63DB;
+  --color-indigo-600: #6547C2;
+  --color-indigo-900: #2B115A;
+
+  /* -- Status layer, folded into the tricolour ---------------------------
+     Only three hues survive on black, so status roles separate by LIGHTNESS
+     and MOTION instead of hue:
+
+       emerald-* -> ice blue  : OK / verified / present
+       amber-*   -> violet    : armed / busy / caution   (+ animate-pulse)
+       green-*   -> violet    : measured diagnostic, secondary action
+       orange-*  -> violet -1 : configuration group, informational notice
+
+     The palette NAMES are kept so adopting this is one CSS edit rather than a
+     rename across every call site - `text-emerald-400` now paints ice blue.
+     Read the name as the ROLE, not the hue.
+
+     Each namespace is cleared to `initial` first. Without that, an undefined
+     step silently falls back to real Tailwind emerald/amber and leaks a
+     non-brand hue into the instrument. Ratios are against the black base. */
+  --color-emerald-*: initial;
+  --color-emerald-100: #EAF7FD; /* 18.2:1 - text on a filled heat cell */
+  --color-emerald-200: #DCF2FC;
+  --color-emerald-300: #C9EAF8;
+  --color-emerald-400: #B6E4F5; /* 15.4:1 - verified / done / present */
+  --color-emerald-500: #8FD8F2; /* 13.2:1 - connected LED, check marks */
+  --color-emerald-600: #6CCBEF; /* 11.4:1 */
+  --color-emerald-900: #06354E;
+
+  --color-amber-*: initial;
+  --color-amber-100: #EDE7FB;
+  --color-amber-200: #DDD2F7;
+  --color-amber-300: #CBBCF2;
+  --color-amber-400: #B9A6EE; /*  9.8:1 - armed / busy / caution text */
+  --color-amber-500: #9B84E8; /*  6.9:1 - busy LED, armed toggle labels */
+  --color-amber-600: #7E63DB; /*  4.7:1 */
+  --color-amber-700: #6547C2; /*  3.2:1 - borders only, never text */
+  --color-amber-900: #2B115A;
+
+  --color-green-*: initial;
+  --color-green-300: #CBBCF2;
+  --color-green-400: #B9A6EE; /*  9.8:1 */
+  --color-green-500: #9B84E8; /*  6.9:1 - 4.6:1 at the /80 it is used with */
+  --color-green-600: #7E63DB;
+
+  --color-orange-*: initial;
+  --color-orange-300: #B9A6EE;
+  --color-orange-400: #9B84E8; /*  6.9:1 */
+  --color-orange-500: #7E63DB; /*  4.7:1 - accent-* on secondary controls */
+  --color-orange-600: #6547C2;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* -- Scrollbars -------------------------------------------------------------
+   The two syntaxes cannot both be declared globally. Chromium discards every
+   ::-webkit-scrollbar rule for an element the moment a standard scrollbar-width
+   OR scrollbar-color is in effect on it. A blanket
+   `* { scrollbar-width: thin; scrollbar-color: ... }` for Firefox therefore
+   silently beats the 6px block - measured: both properties auto gives the
+   intended 6px, the naive combination gives Chrome's `thin`, which is 10px.
+
+   So gate the standard properties on engines that have no ::-webkit-scrollbar
+   at all. Chromium keeps 6px and its hover state; Firefox still gets a thin
+   themed bar. Note `thin` is the narrowest the standard property offers - 6px
+   is only reachable through the webkit pseudo-elements. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2A2A33; border-radius: 3px; }  /* slate-700 */
+::-webkit-scrollbar-thumb:hover { background: #4C4C58; }                /* slate-600 */
+
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: #2A2A33 transparent; }
+}
+
+/* Opt-out for strips that carry their own overflow affordance instead - a tab
+   bar that fades whichever edge still has tabs behind it. Both declarations are
+   needed: scrollbar-width covers Firefox and also hides the bar in Chromium,
+   while the pseudo-element rule keeps that independent of the @supports gate. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* -- Phone base -------------------------------------------------------------
+   The app owns the viewport and never scrolls as a page; only designated panes
+   scroll. `100dvh` rather than `100vh` because a mobile browser's toolbar
+   changes the latter mid-gesture, which moves a fixed footer under the thumb
+   that is reaching for it. */
+html, body, #root { height: 100dvh; }
+body {
+  overscroll-behavior: none;           /* no pull-to-refresh mid-flash */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* Machine data is worth selecting; chrome is not. */
+.selectable { -webkit-user-select: text; user-select: text; }

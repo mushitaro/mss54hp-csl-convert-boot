@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vite/client", "w3c-web-usb", "node"],
+    "paths": { "dme-flash": ["../dme-flash/src/index.ts"] }
+  },
+  "include": ["src", "vite.config.ts", "../dme-flash/src/**/*.ts"],
+  "exclude": ["../dme-flash/src/**/*.test.ts"]
+}

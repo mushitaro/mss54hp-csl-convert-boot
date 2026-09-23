@@ -1,0 +1,23 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+__pycache__/
+
+# Local-only secrets for `wrangler pages dev` (M3_CLIENT_SECRET, GATE_DEV_ACCOUNT). Never committed.
+.dev.vars
+# Local D1 state and wrangler's caches.
+.wrangler/
+
+# The build.
+packages/web/dist/
+
+# Not ours to publish (THIRD-PARTY-NOTICES.md): genuine ECU dumps and the Community Patch images,
+# BMW's SP-DATEN files, the patched program and the CSL bootloader the app serves. A developer
+# supplies them locally; the tests that need them skip without them.
+data/
+packages/web/public/spdaten/
+packages/web/public/program/
+packages/web/public/bootloader/
+__MACOSX/

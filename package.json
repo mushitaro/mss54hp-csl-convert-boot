@@ -1,0 +1,43 @@
+{
+  "name": "e46m3-csl-converter",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gen:region-table": "python tools/analysis/gen_region_table.py",
+    "dev": "vite --config packages/web/vite.config.ts packages/web",
+    "build": "vite build --config packages/web/vite.config.ts packages/web",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/web",
+    "lint": "npx eslint packages/web/src",
+    "icons": "node tools/icons/make_icons.mjs",
+    "preview": "vite preview --config packages/web/vite.config.ts packages/web",
+    "deploy": "npm run build && npx wrangler pages deploy",
+    "db:migrate:local": "npx wrangler d1 migrations apply mss54hp-boot-runs --local",
+    "db:migrate:remote": "npx wrangler d1 migrations apply mss54hp-boot-runs --remote",
+    "runs": "npx wrangler d1 execute mss54hp-boot-runs --remote --command \"SELECT id, created_at, ident, verified, differing_count, censored_blank, logged_in, elapsed_seconds FROM runs ORDER BY created_at DESC LIMIT 20\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^20",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@types/w3c-web-usb": "^1.0.14",
+    "@vitejs/plugin-react": "^5.2.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5",
+    "typescript-eslint": "^8.69.0",
+    "vite": "^7.3.6",
+    "vitest": "^3"
+  },
+  "dependencies": {
+    "lucide-react": "^1.38.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}
