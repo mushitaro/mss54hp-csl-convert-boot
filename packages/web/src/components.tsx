@@ -57,13 +57,25 @@ export function Wordmark(): ReactNode {
     return (
         <h1 className="truncate text-[10px] font-bold uppercase tracking-wide text-slate-200">
             MSS54HP CSL CONVERT{' '}
-            <span className="tracking-tight" aria-hidden="true">
-                <span className="text-blue-500">/</span>
-                <span className="text-indigo-400">/</span>
-                <span className="text-red-500">/</span>
-            </span>{' '}
+            <TripleSlash />{' '}
             <span className="text-slate-400">BOOT</span>
         </h1>
+    );
+}
+
+/**
+ * The `///` itself, for wherever the app's name is drawn - the wordmark, and the preview's notice.
+ *
+ * One definition so the three colours cannot drift between the two. `aria-hidden`, because read
+ * aloud it is "slash slash slash", which is noise.
+ */
+export function TripleSlash(): ReactNode {
+    return (
+        <span className="tracking-tight" aria-hidden="true">
+            <span className="text-blue-500">/</span>
+            <span className="text-indigo-400">/</span>
+            <span className="text-red-500">/</span>
+        </span>
     );
 }
 

@@ -27,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
     globalThis.fetch = realFetch;
     delete (globalThis as { document?: unknown }).document;
+    delete (globalThis as { localStorage?: unknown }).localStorage;
 });
 
 /** A page whose build wrote these metas - the only thing the client reads to decide. */
@@ -36,6 +37,18 @@ function page(meta: Record<string, string>) {
             const name = /name="([^"]+)"/.exec(selector)?.[1] ?? '';
             return name in meta ? { getAttribute: () => meta[name] } : null;
         },
+    };
+}
+
+/**
+ * A browser where the owner has confirmed the preview's first-run notice. Before that the preview
+ * sends nothing at all - previewNotice.test.ts is about that; these are about what it sends after.
+ */
+function confirmed() {
+    const kept = new Map([['preview-notice:v1', '2026-09-24T00:00:00.000Z']]);
+    (globalThis as { localStorage?: unknown }).localStorage = {
+        getItem: (key: string) => kept.get(key) ?? null,
+        setItem: (key: string, value: string) => { kept.set(key, value); },
     };
 }
 
@@ -62,6 +75,7 @@ describe('the production build', () => {
 describe('a failure in the preview build', () => {
     it('is sent by itself, with the build, the mode and the end of the log', async () => {
         page({ 'app-variant': 'preview', 'build-id': '20260923T000000Z.abc1234' });
+        confirmed();
         const log = Array.from({ length: 300 }, (_, i) => `LINE ${i}`);
 
         recordDiagnostic({ stage: 'IDENT', error: 'login refused', log, practice: true, ident: 'MSS54HP' });
@@ -84,6 +98,7 @@ describe('a failure in the preview build', () => {
 
     it('sends nothing that was waiting until the gate says the session is active', async () => {
         page({ 'app-variant': 'preview' });
+        confirmed();
         globalThis.fetch = (async (url: string, init?: RequestInit) => {
             seen.push({ url, init });
             return new Response(JSON.stringify({ state: 'expired', account_label: 'owner-a' }), { status: 200 });
@@ -98,6 +113,7 @@ describe('a failure in the preview build', () => {
 
     it('never throws into the caller, even when the network does', () => {
         page({ 'app-variant': 'preview' });
+        confirmed();
         globalThis.fetch = (async () => { throw new TypeError('offline'); }) as unknown as typeof globalThis.fetch;
         expect(() => recordDiagnostic({ stage: 'BACKUP', error: 'x', log: [], practice: false })).not.toThrow();
     });

@@ -17,6 +17,13 @@
  * the operation it describes, and a record that cannot be sent (no signal, an expired session) is
  * kept in a small outbox and sent after the next send that works.
  *
+ * ## Nothing before the owner has read what is sent
+ *
+ * The preview says what it sends, when and what for in a notice on its first launch, and until the
+ * owner confirms it nothing here sends (previewNotice.ts): a failure record waits in the outbox
+ * exactly as it waits for a signal, and nothing flushes the outbox. The dialog is in front of every
+ * control as well; these checks are what make that a rule of the code rather than of the screen.
+ *
  * ## There is no local store of captures
  *
  * The app keeps a capture in memory for the session and hands it to the operator as a file; it
@@ -24,6 +31,7 @@
  * back as a `.bin`, which the BACKUP step's compare-with-a-file mode takes as it is.
  */
 import { api, gateStatus, isPreviewBuild, outbox, type ApiResult, type GateState } from './owner-sync';
+import { noticeAcknowledged } from './previewNotice';
 import { BUILD_ID } from './pwa';
 
 export { gateStatus, reauthHref, type GateState } from './owner-sync';
@@ -170,14 +178,21 @@ function settled(r: ApiResult<unknown>): boolean {
     return r.status >= 400 && r.status < 500 && r.status !== 401 && r.status !== 408 && r.status !== 429;
 }
 
+/**
+ * One waiting record to the server, and whether the outbox is done with it.
+ *
+ * `false` - "not yet", which is how the outbox keeps a record - while the notice is unconfirmed, and
+ * without a request. So a flush started from anywhere cannot send ahead of the owner's confirmation.
+ */
 const send = async (record: unknown): Promise<boolean> =>
-    settled(await api('/api/diagnostics', { method: 'POST', body: record }));
+    noticeAcknowledged() && settled(await api('/api/diagnostics', { method: 'POST', body: record }));
 
 /**
  * Record a failure. Returns at once; never throws; does nothing outside the preview build.
  *
  * The record is sent now if it can be, and after it anything the outbox was holding, oldest first.
- * If it cannot be, it joins the outbox (newest twenty kept).
+ * If it cannot be, it joins the outbox (newest twenty kept). Before the owner has confirmed the
+ * notice it joins the outbox unsent, and goes with the first flush after the confirmation.
  */
 export function recordDiagnostic(input: DiagnosticInput): void {
     if (!canSync()) return;
@@ -194,6 +209,10 @@ export function recordDiagnostic(input: DiagnosticInput): void {
     };
     void (async () => {
         try {
+            if (!noticeAcknowledged()) {
+                await box.add(record);
+                return;
+            }
             const r = await api('/api/diagnostics', { method: 'POST', body: record });
             if (r.ok) await box.flush(send);
             else if (!settled(r)) await box.add(record);
@@ -203,9 +222,13 @@ export function recordDiagnostic(input: DiagnosticInput): void {
     })();
 }
 
-/** Send whatever is waiting. Called after any sync request that worked. Never throws. */
+/**
+ * Send whatever is waiting. Called after any sync request that worked. Never throws.
+ *
+ * Nothing at all before the notice is confirmed - not even the gate check a flush starts with.
+ */
 export function flushDiagnostics(): void {
-    if (!canSync()) return;
+    if (!canSync() || !noticeAcknowledged()) return;
     void box.flush(send).catch(() => {});
 }
 

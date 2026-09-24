@@ -56,7 +56,8 @@ import {
     SyncRequestError,
     type CloudRun, type CloudDiagnostic, type GateState,
 } from './sync';
-import { CloudPanel, PrivacyHeaderLink, when } from './cloud';
+import { CloudPanel, PreviewNotice, PrivacyHeaderLink, when } from './cloud';
+import { acknowledgeNotice, noticeAcknowledged, noticeRequired } from './previewNotice';
 import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
 import { bundledNames } from '../bundled-files.mjs';
 
@@ -247,6 +248,20 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * is written into the page by the build and cannot change under it.
      */
     const preview = useMemo(() => canSync(), []);
+
+    /**
+     * The preview's first-run notice - what it sends, and why - open until the owner confirms it.
+     *
+     * While it is open the app behind it is `inert`: nothing there can be tapped, focused or read
+     * out, which a scrim alone does not promise. The sends hold back on their own as well
+     * (previewNotice.ts), so this is the screen agreeing with the code, not the only thing between
+     * an owner and a send. Production never opens it.
+     */
+    const [noticeOpen, setNoticeOpen] = useState(noticeRequired);
+    const confirmNotice = useCallback(() => {
+        acknowledgeNotice();
+        setNoticeOpen(false);
+    }, []);
 
     /**
      * A failure, recorded where it happened. Preview only, silent, and unable to throw - see
@@ -1026,7 +1041,9 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * notice about an upload rather than anything about the DME.
      */
     const uploadSession = useCallback(async () => {
-        if (!backup) return;
+        // Nothing to do, rather than a refusal to report, before the notice is confirmed: the
+        // control is behind it, and `uploadRun` would refuse anyway (previewNotice.ts).
+        if (!backup || !noticeAcknowledged()) return;
         setNotice(null);
         setBusy({ phase: 'UPLOAD', done: 0, total: 1 });
         try {
@@ -1295,9 +1312,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         });
     }, []);
 
+    // Not while the notice is up: a listing that works goes on to flush the outbox, and nothing
+    // leaves before the owner has confirmed what does. Confirming it is what starts this.
     useEffect(() => {
-        if (showCloud && gate.state === 'active') void loadCloud();
-    }, [showCloud, gate.state, loadCloud]);
+        if (showCloud && gate.state === 'active' && !noticeOpen) void loadCloud();
+    }, [showCloud, gate.state, loadCloud, noticeOpen]);
 
     /**
      * One request for one row at a time; its failure is a notice, never a thrown error.
@@ -1542,7 +1561,10 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     }), []);
 
     return (
-        <main className="mx-auto flex h-full w-full max-w-[430px] flex-col overflow-hidden bg-slate-950">
+        <>
+        {/* `inert` while the notice is open: see `noticeOpen`. The notice is a sibling rather than a
+            child, because inside an inert <main> it would be inert too. */}
+        <main inert={noticeOpen} className="mx-auto flex h-full w-full max-w-[430px] flex-col overflow-hidden bg-slate-950">
             {/* App header (48). The tricolour stripe replaces its bottom rule from inside the
                 48px, so nothing below it shifts. */}
             <header className="relative flex h-[48px] shrink-0 items-center gap-2 bg-slate-950/80 px-4 backdrop-blur-md">
@@ -1831,6 +1853,8 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadBackup(f); }}
             />
         </main>
+        {noticeOpen && <PreviewNotice onConfirm={confirmNotice} />}
+        </>
     );
 }
 

@@ -113,8 +113,18 @@ describe('sending a run', () => {
     const FACTS = { label: 'test', createdAt: 1_700_000_000_000 };
 
     let realFetch: typeof globalThis.fetch;
-    beforeEach(() => { realFetch = globalThis.fetch; });
-    afterEach(() => { globalThis.fetch = realFetch; });
+    // A browser where the owner has confirmed the preview's first-run notice: before that nothing
+    // is sent at all (previewNotice.test.ts).
+    beforeEach(() => {
+        realFetch = globalThis.fetch;
+        (globalThis as { localStorage?: unknown }).localStorage = {
+            getItem: (key: string) => (key === 'preview-notice:v1' ? '2026-09-24T00:00:00.000Z' : null),
+        };
+    });
+    afterEach(() => {
+        globalThis.fetch = realFetch;
+        delete (globalThis as { localStorage?: unknown }).localStorage;
+    });
 
     function server(status: number, body: unknown) {
         const seen: RequestInit[] = [];

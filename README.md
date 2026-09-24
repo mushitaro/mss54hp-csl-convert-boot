@@ -23,6 +23,8 @@ m3.tsunagi.app のアカウントで入り（`owner_preview` の権利が要り�
 取得したイメージとログは、UPLOAD を押したときだけ、そのアカウントの持ち物として保存されます。
 失敗の記録（段・エラー文・ログの末尾・ビルド・PRACTICE か否か）は自動で送られます。
 何を送り、何に使い、いつ消すかは [プライバシーポリシー](https://m3.tsunagi.app/privacy-policy#preview) に書いてあります。
+初めて開いたときは、送るものとその目的を、アプリ自身のダイアログが最初に示します（`packages/web/src/previewNotice.ts`）。
+「確認して続ける」を押すまで、イメージとログも失敗の記録も送りません。確認は、ブラウザごとに localStorage の `preview-notice:v1` に残ります。
 
 **このリポジトリに無いもの**と、その理由と入手先は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) の §2 にあります。
 BMW の SP-DATEN、CSL のブートローダ、Community Patch のプログラム、実車のダンプです。

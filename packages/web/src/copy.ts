@@ -423,6 +423,32 @@ const JA = {
     syncPractice: 'PRACTICE',
     privacy: 'PRIVACY',
 
+    // --- the first-run notice (preview only) ---------------------------------------------------
+    // What m3's notice page said, word for word: NOTICE_COPY and NOTICE_APPS['boot-preview'] from
+    // tsunagi-m3 `lib/preview-notice-copy.ts`, which m3 removed with the page (941b5d8). The privacy
+    // policy's #preview section says the same at length, so a change here is a change there too.
+    // The title is the app's name plus PREVIEW - chrome, the same in both languages - and is drawn
+    // in the dialog (cloud.tsx) with the wordmark's mark, like the wordmark itself.
+    noticeLead: 'このプレビュー版は、保存した記録を別の端末でも開けるよう、また不具合を調べられるよう、'
+        + '次のものを運営者のサーバーへ送ります。',
+    noticeSessionsTitle: '保存したセッション',
+    noticeSessions: 'DME の 1 MiB バックアップ（VIN・AIF・フラッシュ回数を含む）と、その操作の記録',
+    noticeSessionsWhen: 'SYNC を押して保存したときに送ります。',
+    noticeRecordsTitle: 'エラーの記録',
+    noticeRecords: '各段階の結果とエラーの文面（バックアップを取る前の失敗を含む）、操作の記録',
+    noticeRecordsWhen: '操作のたびに自動で送ります。通信できないときは端末に残し、次に送ります。',
+    noticeAlsoSent: 'どちらにも、アプリの版とブラウザの種類が付きます。',
+    noticePurposeTitle: '使いみち',
+    noticePurpose: 'ご本人が別の端末で記録を開くため、そして不具合を調べてツールを直すためだけに使います。',
+    noticeWhereTitle: '保存先と、見られる人',
+    noticeWhere: 'Cloudflare のデータベース（アジア太平洋地域）に、アカウントごとに分けて保存します。'
+        + '見られるのは、ご本人と運営者だけです。',
+    noticeDeleteTitle: '削除',
+    noticeDelete: '保存したセッションとエラーの記録は、アプリの中でいつでも削除できます。'
+        + 'まとめて削除したいときは、Discord からご連絡ください。',
+    noticePolicy: '詳しくはプライバシーポリシー',
+    noticeConfirm: '確認して続ける',
+
     // --- generic -----------------------------------------------------------------------------
     retry: 'もう一度',
     back: '戻る',
@@ -716,6 +742,28 @@ const EN: typeof JA = {
     syncDeleteError: (when) => `Delete the failure record from ${when} from the cloud? This cannot be undone.`,
     syncPractice: 'PRACTICE',
     privacy: 'PRIVACY',
+
+    noticeLead: 'So that what you save opens on your other devices, and so that faults can be investigated, '
+        + 'this preview sends the following to our server.',
+    noticeSessionsTitle: 'Sessions you save',
+    noticeSessions: 'the 1 MiB DME backup (including the VIN, AIF and flash counter) and the log of the session',
+    noticeSessionsWhen: 'Sent when you press SYNC to save one.',
+    noticeRecordsTitle: 'Error records',
+    noticeRecords: 'the outcome and any error text of each stage, including failures before a backup exists, '
+        + 'and the session log',
+    noticeRecordsWhen: 'Sent automatically after each operation. Without a connection they wait on the device '
+        + 'and go next time.',
+    noticeAlsoSent: 'Both carry the app version and the browser type.',
+    noticePurposeTitle: 'What it is for',
+    noticePurpose: 'Only for opening your records on your other devices, and for finding and fixing faults in the tool.',
+    noticeWhereTitle: 'Where it is kept, and who can see it',
+    noticeWhere: 'In a Cloudflare database (Asia-Pacific), kept separately per account. '
+        + 'Only you and the operator can see it.',
+    noticeDeleteTitle: 'Deleting it',
+    noticeDelete: 'You can delete saved sessions and error records in the app at any time. '
+        + 'To have everything deleted at once, contact us on Discord.',
+    noticePolicy: 'Privacy policy, in full',
+    noticeConfirm: 'Confirm and continue',
 
     hubPickOne: 'Choose one.',
     hubNothingToConvert: 'There is nothing here to convert.',

@@ -16,12 +16,15 @@
  *
  * A capture carries the VIN, the AIF and the flash counter of a specific car. It leaves the phone
  * only when someone taps UPLOAD - never as a side effect of finishing a backup. Only the preview
- * build offers that control; the production build sends nothing anywhere.
+ * build offers that control; the production build sends nothing anywhere. And not before the owner
+ * has confirmed the preview's first-run notice of what it sends (previewNotice.ts): `uploadRun`
+ * refuses until then, whatever calls it.
  *
  * There is no token. The preview is served behind the owner gate, which put a session cookie on
  * this origin when the owner arrived from m3, and the request below is same-origin, so the browser
  * sends it. The server files the run under that account and no other.
  */
+import { NoticeNotAcknowledged, noticeAcknowledged } from './previewNotice';
 
 /** Where the run went, and how big it was once compressed. */
 export interface UploadResult {
@@ -106,6 +109,9 @@ export async function uploadRun(
     log: readonly string[],
     facts: RunFacts,
 ): Promise<UploadResult> {
+    // First, before anything is read or compressed: the control is behind the notice anyway, and
+    // this is the code, not the screen, saying that a run cannot leave before it is confirmed.
+    if (!noticeAcknowledged()) throw new NoticeNotAcknowledged();
     if (!uploadSupported()) throw new Error('This browser cannot gzip, so there is nothing to send.');
 
     const [imageGz, logGz] = await Promise.all([
