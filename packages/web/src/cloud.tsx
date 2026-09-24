@@ -172,9 +172,9 @@ export function PrivacyHeaderLink(): ReactNode {
 /**
  * What the preview sends, and why - on its first launch, before it sends any of it.
  *
- * m3's notice, word for word (copy.ts). It used to be a page on m3 that a first visit passed
- * through; it is here now, as TUNER's disclaimer is, so the code that sends is the code that says
- * what it sends. Whether it is shown, and what waits until it is confirmed, is previewNotice.ts;
+ * m3's notice, in the words that are true of this app (copy.ts). It used to be a page on m3 that a
+ * first visit passed through; it is here now, as TUNER's disclaimer is, so the code that sends is
+ * the code that says what it sends. Whether it is shown, and what waits until it is confirmed, is previewNotice.ts;
  * App renders it only in the preview, over an app it has made `inert`.
  *
  * One way on: the button. No close control, no Escape, and the scrim closes nothing. The notice asks

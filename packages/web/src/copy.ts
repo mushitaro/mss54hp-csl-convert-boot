@@ -424,19 +424,22 @@ const JA = {
     privacy: 'PRIVACY',
 
     // --- the first-run notice (preview only) ---------------------------------------------------
-    // What m3's notice page said, word for word: NOTICE_COPY and NOTICE_APPS['boot-preview'] from
-    // tsunagi-m3 `lib/preview-notice-copy.ts`, which m3 removed with the page (941b5d8). The privacy
-    // policy's #preview section says the same at length, so a change here is a change there too.
-    // The title is the app's name plus PREVIEW - chrome, the same in both languages - and is drawn
-    // in the dialog (cloud.tsx) with the wordmark's mark, like the wordmark itself.
+    // What m3's notice page said (NOTICE_COPY and NOTICE_APPS['boot-preview'] from tsunagi-m3
+    // `lib/preview-notice-copy.ts`, removed with the page in 941b5d8), except where the shared words
+    // were not true of this app (2026-09-24): a run leaves on UPLOAD, not SYNC, and a record only
+    // when something fails, not after every operation. `noticeAlsoSent` is unchanged because it is
+    // true here - a run carries the build and the user agent just as a record does (upload.ts,
+    // functions/api/runs). The privacy policy's #preview section says the same at length, so a
+    // change here is a change there too. The title is the app's name plus PREVIEW - chrome, the same
+    // in both languages - and is drawn in the dialog (cloud.tsx) with the wordmark's mark.
     noticeLead: 'このプレビュー版は、保存した記録を別の端末でも開けるよう、また不具合を調べられるよう、'
         + '次のものを運営者のサーバーへ送ります。',
     noticeSessionsTitle: '保存したセッション',
     noticeSessions: 'DME の 1 MiB バックアップ（VIN・AIF・フラッシュ回数を含む）と、その操作の記録',
-    noticeSessionsWhen: 'SYNC を押して保存したときに送ります。',
+    noticeSessionsWhen: 'UPLOAD を押したときに送ります。',
     noticeRecordsTitle: 'エラーの記録',
-    noticeRecords: '各段階の結果とエラーの文面（バックアップを取る前の失敗を含む）、操作の記録',
-    noticeRecordsWhen: '操作のたびに自動で送ります。通信できないときは端末に残し、次に送ります。',
+    noticeRecords: '失敗した段階とエラーの文面（バックアップを取る前の失敗を含む）、操作の記録',
+    noticeRecordsWhen: '失敗したときに自動で送ります。通信できないときは端末に残し、次に送ります。',
     noticeAlsoSent: 'どちらにも、アプリの版とブラウザの種類が付きます。',
     noticePurposeTitle: '使いみち',
     noticePurpose: 'ご本人が別の端末で記録を開くため、そして不具合を調べてツールを直すためだけに使います。',
@@ -747,11 +750,11 @@ const EN: typeof JA = {
         + 'this preview sends the following to our server.',
     noticeSessionsTitle: 'Sessions you save',
     noticeSessions: 'the 1 MiB DME backup (including the VIN, AIF and flash counter) and the log of the session',
-    noticeSessionsWhen: 'Sent when you press SYNC to save one.',
+    noticeSessionsWhen: 'Sent when you press UPLOAD.',
     noticeRecordsTitle: 'Error records',
-    noticeRecords: 'the outcome and any error text of each stage, including failures before a backup exists, '
+    noticeRecords: 'the stage that failed and its error text (including failures before a backup exists), '
         + 'and the session log',
-    noticeRecordsWhen: 'Sent automatically after each operation. Without a connection they wait on the device '
+    noticeRecordsWhen: 'Sent automatically when something fails. Without a connection they wait on the device '
         + 'and go next time.',
     noticeAlsoSent: 'Both carry the app version and the browser type.',
     noticePurposeTitle: 'What it is for',
