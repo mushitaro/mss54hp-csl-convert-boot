@@ -56,10 +56,25 @@ const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
  * branded build actually carries.
  */
 const VARIANT = (process.env.M_VARIANT ?? '').trim().toLowerCase();
-if (VARIANT && !/^[a-z]{1,12}$/.test(VARIANT)) {
-    throw new Error(`M_VARIANT must be empty (production) or one lowercase word of at most 12 letters, got "${VARIANT}"`);
+
+/**
+ * What each non-production build is CALLED, which is a different thing from what it is.
+ *
+ * The owners' build is the `preview` variant and is called WORKS, by the operator's decision
+ * (2026-09-25): the name casts the owners who bought MILE as a works team - members of the maker's
+ * own development team. Display only - the manifest's names, the apple title, and `<meta name="app-label">`,
+ * which the header badge reads. Nothing that decides what a build does reads the label; the variant
+ * stays `preview` everywhere code compares it.
+ *
+ * The table is also the list of variants: any other M_VARIANT fails the build, rather than
+ * shipping under a name nobody chose.
+ */
+const BUILD_LABEL = { preview: 'WORKS', staging: 'STAGING' } as const;
+const isVariant = (v: string): v is keyof typeof BUILD_LABEL => Object.hasOwn(BUILD_LABEL, v);
+if (VARIANT && !isVariant(VARIANT)) {
+    throw new Error(`M_VARIANT must be empty (production) or one of ${Object.keys(BUILD_LABEL).join(', ')}, got "${VARIANT}"`);
 }
-const LABEL = VARIANT.toUpperCase();
+const LABEL: string = VARIANT && isVariant(VARIANT) ? BUILD_LABEL[VARIANT] : '';
 
 /** The product, as production calls it. Every other build is this plus its label. */
 const PRODUCTION = { name: 'MSS54HP CSL CONVERT /// BOOT', shortName: 'CSL BOOT' };
@@ -105,15 +120,21 @@ function brandedManifest(): Manifest {
 /**
  * index.html as this build ships it.
  *
- * The variant meta is removed before it is written, never only inserted: two would be read in
- * document order and the stale one would win. Same for build-id. `<title>` is left alone - the
- * name a home screen shows comes from the manifest and the apple title.
+ * The variant and label metas are removed before they are written, never only inserted: two would
+ * be read in document order and the stale one would win. Same for build-id. `app-label` is written
+ * only when there is a label - production has none, and so draws no badge. `<title>` is left alone -
+ * the name a home screen shows comes from the manifest and the apple title.
  */
 function brandHtml(html: string, buildId: string): string {
+    const identity = [
+        `<meta name="app-variant" content="${VARIANT}" />`,
+        ...(LABEL ? [`<meta name="app-label" content="${LABEL}" />`] : []),
+        `<meta name="build-id" content="${buildId}" />`,
+    ];
     let out = html
-        .replace(/\s*<meta\s+name="app-variant"[^>]*>/gi, '')
+        .replace(/\s*<meta\s+name="app-(?:variant|label)"[^>]*>/gi, '')
         .replace(/\s*<meta\s+name="build-id"[^>]*>/gi, '')
-        .replace(/<\/head>/i, `  <meta name="app-variant" content="${VARIANT}" />\n    <meta name="build-id" content="${buildId}" />\n  </head>`);
+        .replace(/<\/head>/i, `  ${identity.join('\n    ')}\n  </head>`);
     if (LABEL) {
         out = out
             .replace(/(<meta\s+name="apple-mobile-web-app-title"\s+content=")[^"]*(")/i, `$1${SHORT_NAME}$2`)
@@ -228,8 +249,14 @@ function identityAndServiceWorker(): Plugin {
             const variantMeta = [...html.matchAll(/<meta\s+name="app-variant"\s+content="([^"]*)"/gi)].map((m) => m[1]);
             if (variantMeta.length !== 1 || variantMeta[0] !== VARIANT) problems.push(`app-variant meta is ${JSON.stringify(variantMeta)}, expected ["${VARIANT}"]`);
             if ([...html.matchAll(/<meta\s+name="build-id"/gi)].length !== 1) problems.push('there must be exactly one build-id meta');
-            for (const f of readdirSync(outDir)) {
-                if (f.endsWith('.html') && /<meta\s+name="sync-token"/i.test(readFileSync(join(outDir, f), 'utf8'))) problems.push(`${f} carries a sync-token meta`);
+            for (const f of readdirSync(outDir).filter((name) => name.endsWith('.html'))) {
+                const doc = readFileSync(join(outDir, f), 'utf8');
+                if (/<meta\s+name="sync-token"/i.test(doc)) problems.push(`${f} carries a sync-token meta`);
+                // The name the header badge shows: LABEL exactly once, and none at all in production.
+                const labelMeta = [...doc.matchAll(/<meta\s+name="app-label"(?:\s+content="([^"]*)")?/gi)].map((m) => m[1] ?? null);
+                if (JSON.stringify(labelMeta) !== JSON.stringify(LABEL ? [LABEL] : [])) {
+                    problems.push(`${f}: app-label meta is ${JSON.stringify(labelMeta)}, expected ${LABEL ? `["${LABEL}"]` : 'none'}`);
+                }
             }
 
             const iconPaths = [...manifest.icons.map((i) => i.src), ...linkedIcons(html)];
@@ -259,7 +286,7 @@ function identityAndServiceWorker(): Plugin {
             }
 
             if (problems.length) throw new Error(`the build is not what it should be:\n  ${problems.join('\n  ')}`);
-            this.info?.(`identity ok: ${VARIANT || 'production'} ${buildId}, ${precache.length} precached`);
+            this.info?.(`identity ok: ${VARIANT ? `${VARIANT} (${LABEL})` : 'production'} ${buildId}, ${precache.length} precached`);
         },
     };
 }

@@ -15,9 +15,9 @@ npx tsc --noEmit
 npm run gen:region-table   # 実イメージから region_table を再生成
 ```
 
-## プレビュー版と、このリポジトリに無いもの
+## ワークス版と、このリポジトリに無いもの
 
-**プレビュー版**は、MILE をご購入いただいた方と、施工をご依頼いただいたオーナーさんのためのものです。
+**ワークス版**は、MILE をご購入いただいた方と、施工をご依頼いただいたオーナーさんのためのものです。
 m3.tsunagi.app のアカウントで入り（`owner_preview` の権利が要ります）、アカウントの無い人には何も配信しません。
 画面・資産・API のすべてが `functions/_middleware.ts` のゲートの内側にあります。
 取得したイメージとログは、UPLOAD を押したときだけ、そのアカウントの持ち物として保存されます。
@@ -52,6 +52,8 @@ npx wrangler pages dev packages/web/dist --port 8789
 ```
 
 `GATE_DEV_*` は localhost と 127.0.0.1 でだけ効き、それ以外のホストでは無視されます。
+`M_VARIANT=preview` のビルドが、画面とホーム画面で WORKS と名乗るワークス版です。名前は表示だけの決まりで
+（`packages/web/vite.config.ts` の `BUILD_LABEL` と `<meta name="app-label">`）、variant も、コードが比べる値も `preview` のままです。
 `M_VARIANT=preview` を付けないビルドは本番の身元（app-variant が空）で、SYNC は一切の要求を出しません。
 
 ### 配信
@@ -61,11 +63,11 @@ npx wrangler pages dev packages/web/dist --port 8789
 
 - ゲート（`functions/_middleware.ts`）が無い、`npm run gate:verify` か `check-public-tree` が通らない
 - 作業ツリーが汚れている、`main` でない、**GitHub の `origin/main` と HEAD が一致しない**
-  （プレビューとして配るものは、公開されたソースから作ったものだけ）
+  （ワークス版として配るものは、公開されたソースから作ったものだけ）
 - `origin` が `github.com/mushitaro/mss54hp-csl-convert-boot` でない、または GitHub が
   認証なしの問い合わせに「公開（`private: false`）で、この HEAD のコミットがある」と答えない。
   問い合わせができない（圏外、レート制限）ときも止まります
-- preview ビルドの検査が通らない、BMW のファイル（§2）が `dist/` に無い
+- preview ビルドの検査が通らない（WORKS と名乗っていないときを含む）、BMW のファイル（§2）が `dist/` に無い
 
 `npm run deploy -- --check` は、関門とビルドだけを走らせて止まります。
 初回の準備（Pages プロジェクト、Fail closed、D1 の移行、`M3_CLIENT_SECRET`）は `wrangler.jsonc` の冒頭にあります。
@@ -387,13 +389,13 @@ docs/bdm-tool.md             自作 BDM ツールの設計。既存のフラッ�
   `ecu/10FLASH.prg` と `data/MSS54/*.0PA|.0DA`。
 - 設計は skill `tsunagi-m-design`、破壊的経路の規律は同 `references/link-measurement-and-safety.md`。
 
-## UI (Android / WebUSB) — https://mss54hp-csl-convert-boot-preview.pages.dev（プレビュー版）
+## UI (Android / WebUSB) — https://mss54hp-csl-convert-boot-preview.pages.dev（ワークス版）
 
 ```bash
 npm run dev        # 開発サーバ (Service Worker は登録されない)
 npm run build      # packages/web/dist へ静的出力
 npm run preview    # ビルド済みを配信。SW / オフラインの確認はこちら
-npm run deploy     # 関門を通して、preview を Cloudflare Pages へ（上の「配信」）
+npm run deploy     # 関門を通して、ワークス版を Cloudflare Pages へ（上の「配信」）
 npm run typecheck
 ```
 
@@ -910,11 +912,11 @@ Android の Chrome で開いて「ホーム画面に追加」。**https が必�
 
 ランチャーのアイコンは M ICON の `migration`（`tsunagi-m3/scripts/m-icons.mjs` で `public/icons/` に書き出し）。
 DME を CSL のプログラムへ移す道具なので MIGRATION、という運営者の決定（2026-09-23）です。以前の `modification` は取り違えでした。
-プレビュー版のビルドは dev セットを付けます。`npm run icons` が作るのはアプリの中のマークで、ランチャーには使いません。
+ワークス版のビルドは dev セットを付けます。`npm run icons` が作るのはアプリの中のマークで、ランチャーには使いません。
 
 新しいビルドが待機したらハブの下に `UPDATE` が出ます。**「再読み込みしてください」ではありません** —
 同一タブの再読み込みではクライアントが解放されず、待機中のワーカーは待機したまま、古いビルドで
 戻ってきます(デプロイ先で確認)。従えるのに効かない指示は、効かないことが分かりにくいぶん最悪です。
 
 ヘッダ右にビルド ID (UTC・秒精度)。分精度だと同じ分内の 2 回目のデプロイでワーカーがバイト一致し、
-**更新が黙って出荷されません**でした。
+**更新が黙って出荷されません**でした。ワークス版では、その列の一番上に `WORKS` の札が出ます（押せる操作ではなく、本番には出ません）。

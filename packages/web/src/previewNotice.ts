@@ -67,7 +67,7 @@ export function noticeRequired(): boolean {
 /** A send refused because the notice has not been confirmed. Nothing was sent. */
 export class NoticeNotAcknowledged extends Error {
     constructor() {
-        super('The preview notice has not been confirmed in this browser, so nothing was sent.');
+        super('The notice has not been confirmed in this browser, so nothing was sent.');
         this.name = 'NoticeNotAcknowledged';
     }
 }

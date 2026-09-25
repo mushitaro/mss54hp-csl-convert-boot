@@ -51,7 +51,7 @@ import {
 import { linkBlock } from './platform';
 import { UploadError, uploadRun, uploadSupported } from './upload';
 import {
-    canSync, currentGate, recordDiagnostic, flushDiagnostics, reauthHref,
+    canSync, buildLabel, currentGate, recordDiagnostic, flushDiagnostics, reauthHref,
     listRuns, listDiagnostics, deleteRun, deleteDiagnostic, fetchRunPart, fetchDiagnosticLog, cloudFilename,
     SyncRequestError,
     type CloudRun, type CloudDiagnostic, type GateState,
@@ -248,6 +248,12 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * is written into the page by the build and cannot change under it.
      */
     const preview = useMemo(() => canSync(), []);
+    /**
+     * What this build is called - WORKS for the owners' build, '' in production - for the header
+     * badge. Its own meta rather than the variant upper-cased: the name is a display decision
+     * (vite.config.ts `BUILD_LABEL`), and nothing that decides behaviour reads it.
+     */
+    const label = useMemo(() => buildLabel(), []);
 
     /**
      * The preview's first-run notice - what it sends, and why - open until the owner confirms it.
@@ -1582,6 +1588,12 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 {/* Identity readouts, mono, right-aligned. The build id is here so the answer to
                     "which version is on that phone" is on the phone rather than in a changelog. */}
                 <div className={`${preview ? 'ml-3' : 'ml-auto'} flex shrink-0 flex-col items-end gap-0.5 leading-none`}>
+                    {/* Which build this is, once inside it: the manifest's name shows only on the
+                        way in. WORKS on the owners' build, nothing in production. A <span>, not a
+                        control - it says which URL this is and switches nothing. Amber, "not the
+                        release". Narrower than the build id under it, so the column, and with it
+                        the wordmark, keeps its width. */}
+                    {label && <span className="rounded bg-amber-500/15 px-1 py-px text-[8px] font-bold uppercase tracking-widest text-amber-400">{label}</span>}
                     {/* One readout, three mutually exclusive facts. PRACTICE outranks the lock
                         because in practice the lock is not what is stopping anything - there is no
                         ECU on the other end at all, and that is the more important thing to know. */}

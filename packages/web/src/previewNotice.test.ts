@@ -45,11 +45,17 @@ afterEach(() => {
     delete (globalThis as { localStorage?: unknown }).localStorage;
 });
 
-/** The page the build wrote. `app-variant` is the only thing the app reads to know which it is. */
+/**
+ * The page the build wrote. `app-variant` is the only thing the app reads to know which it is;
+ * `app-label` is only what it is called, and production carries none (vite.config.ts).
+ */
 function page(variant: '' | 'preview') {
+    const metas: Record<string, string> = variant ? { 'app-variant': variant, 'app-label': 'WORKS' } : { 'app-variant': '' };
     (globalThis as { document?: unknown }).document = {
-        querySelector: (selector: string) =>
-            (/name="app-variant"/.test(selector) ? { getAttribute: () => variant } : null),
+        querySelector: (selector: string) => {
+            const content = metas[/name="([^"]+)"/.exec(selector)?.[1] ?? ''];
+            return content === undefined ? null : { getAttribute: () => content };
+        },
     };
 }
 
@@ -163,6 +169,7 @@ describe('the production build', () => {
             expect(html).not.toContain('role="dialog"');
             expect(html).not.toContain(t().noticeLead);
             expect(html).not.toMatch(/<main[^>]*\binert/);
+            expect(html, 'no build badge').not.toContain('>WORKS</span>');
         }
     });
 });
@@ -175,10 +182,11 @@ describe('the preview, on its first launch', () => {
         const html = render();
 
         expect(html).toMatch(/<main inert=""/);
+        expect(html, 'the header badge names the build').toContain('>WORKS</span>');
         const dialog = dialogIn(html);
         expect(dialog).toContain('aria-modal="true"');
         expect(dialog).toContain('aria-labelledby="preview-notice-title"');
-        expect(dialog).toMatch(/id="preview-notice-title"[^>]*>MSS54HP CSL CONVERT .*BOOT — PREVIEW<\/span><\/h2>/);
+        expect(dialog).toMatch(/id="preview-notice-title"[^>]*>MSS54HP CSL CONVERT .*BOOT — WORKS<\/span><\/h2>/);
         for (const text of [
             c.noticeLead,
             c.noticeSessionsTitle, c.noticeSessions, c.noticeSessionsWhen,

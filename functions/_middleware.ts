@@ -18,7 +18,7 @@ import { createGate } from './_owner-gate/gate';
 export const onRequest = createGate({
     clientId: 'boot-preview',
     canonicalHost: 'mss54hp-csl-convert-boot-preview.pages.dev',
-    name: 'MSS54HP CSL CONVERT /// BOOT — PREVIEW',
+    name: 'MSS54HP CSL CONVERT /// BOOT — WORKS',
     publicPaths: [
         '/manifest.webmanifest',
         '/icons/migration-dev-192.png',

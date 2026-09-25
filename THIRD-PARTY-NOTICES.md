@@ -1,7 +1,7 @@
 # Third-party notices and data provenance
 
 This file records what this project depends on, what it is derived from, and which of
-those things are in this repository, which are served by the preview, and which never
+those things are in this repository, which are served by the WORKS build, and which never
 leave the developer's machine.
 
 **This is a record of facts, not legal advice.** The provenance questions in §3 are
@@ -32,7 +32,7 @@ run through `npx` for local development and deployment and is not a dependency.
 
 ### 1.3 What the app talks to
 
-The cable, over WebUSB. In the preview build, also its own origin: `/_gate/status` (is the
+The cable, over WebUSB. In the WORKS build, also its own origin: `/_gate/status` (is the
 owner still signed in) and `/api/runs` / `/api/diagnostics` (the owner's saved sessions and
 error records). Nothing goes to a third party. The production build makes no request to
 any API at all.
@@ -104,7 +104,7 @@ environment variable (`CSL_0401_BIN`, `CP_V1_BIN`), and skip the same way.
 
 ### 2.5 Real sessions
 
-Captures and logs from real cars are uploaded by their owners to the preview's database
+Captures and logs from real cars are uploaded by their owners to the WORKS build's database
 (Cloudflare D1), filed under the owner's m3 account and readable only by that account. None
 of it is, or ever will be, in this repository.
 
@@ -136,9 +136,9 @@ of one beyond what a fact needs, is committed.
 
 ---
 
-## 5. The preview serves §2.1-§2.3
+## 5. The WORKS build serves §2.1-§2.3
 
-The preview (`README.md`, "Preview") serves the SP-DATEN files, the bootloader and the
+The WORKS build (`README.md`, "ワークス版") serves the SP-DATEN files, the bootloader and the
 patched program from its own origin so that the app opens and works offline in a garage.
 It serves them only behind the owner gate - to signed-in owners who hold `owner_preview` on
 m3.tsunagi.app - and never from this repository or any public URL.

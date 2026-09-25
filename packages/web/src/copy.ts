@@ -431,9 +431,11 @@ const JA = {
     // sync.ts), which the records line names. `noticeAlsoSent` is unchanged because it is
     // true here - a run carries the build and the user agent just as a record does (upload.ts,
     // functions/api/runs). The privacy policy's #preview section says the same at length, so a
-    // change here is a change there too. The title is the app's name plus PREVIEW - chrome, the same
-    // in both languages - and is drawn in the dialog (cloud.tsx) with the wordmark's mark.
-    noticeLead: 'このプレビュー版は、保存した記録を別の端末でも開けるよう、また不具合を調べられるよう、'
+    // change here is a change there too. The build is called WORKS - ワークス版 in Japanese prose,
+    // "the WORKS build" in English (the operator, 2026-09-25); the variant is still `preview`. The
+    // title is the app's name plus WORKS - chrome, the same in both languages and never translated -
+    // and is drawn in the dialog (cloud.tsx) with the wordmark's mark.
+    noticeLead: 'このワークス版は、保存した記録を別の端末でも開けるよう、また不具合を調べられるよう、'
         + '次のものを運営者のサーバーへ送ります。',
     noticeSessionsTitle: '保存したセッション',
     noticeSessions: 'DME の 1 MiB バックアップ（VIN・AIF・フラッシュ回数を含む）と、その操作の記録',
@@ -748,7 +750,7 @@ const EN: typeof JA = {
     privacy: 'PRIVACY',
 
     noticeLead: 'So that what you save opens on your other devices, and so that faults can be investigated, '
-        + 'this preview sends the following to our server.',
+        + 'this WORKS build sends the following to our server.',
     noticeSessionsTitle: 'Sessions you save',
     noticeSessions: 'the 1 MiB DME backup (including the VIN, AIF and flash counter) and the log of the session',
     noticeSessionsWhen: 'Sent when you press UPLOAD.',

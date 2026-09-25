@@ -472,7 +472,7 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
       {
         title: config.name,
         body: [
-          'このプレビュー版は、MILE をご購入いただいた方と、施工をご依頼いただいたオーナーさんにお使いいただいています。',
+          'このワークス版は、MILE をご購入いただいた方と、施工をご依頼いただいたオーナーさんにお使いいただいています。',
           'ご購入済みの方は、<a href="https://m3.tsunagi.app/restore">この端末で使えるように</a>してから開き直してください。',
           '<a href="https://m3.tsunagi.app/mesh">MILE について</a>',
         ],
@@ -480,7 +480,7 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
       {
         title: config.name,
         body: [
-          'This preview is for those who have bought MILE and for owners whose cars we have worked on.',
+          'This WORKS build is for those who have bought MILE and for owners whose cars we have worked on.',
           'If you have bought MILE, <a href="https://m3.tsunagi.app/restore?lang=en">set this device up</a> and open it again.',
           '<a href="https://m3.tsunagi.app/en/mesh">About MILE</a>',
         ],

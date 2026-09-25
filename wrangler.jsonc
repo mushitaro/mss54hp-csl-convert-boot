@@ -42,7 +42,7 @@
  *   npx wrangler d1 export mss54hp-boot-runs --remote --output <outside the repo>/runs-before.sql
  *   npm run db:migrate:remote                  # 0002: owner column + trigger, diagnostics table
  *   # in tsunagi-m3, which pipes M3_CLIENT_SECRET into this project without printing it:
- *   npm run access:client -- --id boot-preview --name "MSS54HP CSL CONVERT /// BOOT — PREVIEW" \
+ *   npm run access:client -- --id boot-preview --name "MSS54HP CSL CONVERT /// BOOT — WORKS" \
  *     --origin https://mss54hp-csl-convert-boot-preview.pages.dev --project mss54hp-csl-convert-boot-preview
  *
  * Then `npm run deploy` for every build after that.

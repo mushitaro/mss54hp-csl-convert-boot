@@ -217,7 +217,7 @@ export function PreviewNotice({ onConfirm }: { onConfirm: () => void }): ReactNo
                         >
                             MSS54HP CSL CONVERT{' '}
                             <TripleSlash />{' '}
-                            <span className="text-slate-400">BOOT — PREVIEW</span>
+                            <span className="text-slate-400">BOOT — WORKS</span>
                         </h2>
                     </div>
 

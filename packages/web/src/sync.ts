@@ -41,6 +41,15 @@ export function canSync(): boolean {
     return isPreviewBuild();
 }
 
+/**
+ * What this build is called on screen - WORKS for the owners' build - or '' in production, which
+ * carries no `app-label`. Display only: what the build does is the variant's, never this.
+ */
+export function buildLabel(): string {
+    if (typeof document === 'undefined') return '';
+    return document.querySelector('meta[name="app-label"]')?.getAttribute('content') ?? '';
+}
+
 /** One saved run, as the listing describes it - without its bytes. */
 export interface CloudRun {
     id: string;

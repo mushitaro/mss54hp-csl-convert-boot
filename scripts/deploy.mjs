@@ -26,7 +26,8 @@
 //      would ask it. If it cannot be asked (offline, rate-limited, GitHub down), that is a refusal
 //      too: not verified is not the same as public.
 //   6. The build (M_VARIANT=preview) fails its own checks (packages/web/vite.config.ts), carries a
-//      sync-token meta, stamps a different or dirty sha, lacks the BMW files the app needs
+//      sync-token meta, is not called WORKS (its app-label - what the owners see; the variant stays
+//      preview), stamps a different or dirty sha, lacks the BMW files the app needs
 //      offline - they are not in the repository and have to be supplied locally
 //      (THIRD-PARTY-NOTICES.md §2) - or carries anything else in dist/{spdaten,program,bootloader}.
 //      Those folders are git-ignored, so only this list (packages/web/bundled-files.mjs) stands
@@ -156,11 +157,15 @@ const index = fs.readFileSync(path.join(dist, 'index.html'), 'utf8');
 const buildId = /<meta\s+name="build-id"\s+content="([^"]*)"/.exec(index)?.[1] ?? '';
 const variant = /<meta\s+name="app-variant"\s+content="([^"]*)"/.exec(index)?.[1];
 if (variant !== 'preview') refuse(`the build says app-variant "${variant}", not "preview".`);
+// What the owners see it called (the operator, 2026-09-25). A literal, like the variant above, and
+// not read from vite.config.ts: renaming the build takes a change here as well as there.
+const labels = [...index.matchAll(/<meta\s+name="app-label"\s+content="([^"]*)"/g)].map((m) => m[1]);
+if (labels.length !== 1 || labels[0] !== 'WORKS') refuse(`the build says app-label ${JSON.stringify(labels)}, not ["WORKS"].`);
 const stamped = buildId.split('.').pop() ?? '';
 if (!/^[0-9a-f]{7,40}$/.test(stamped) || !head.startsWith(stamped)) {
     refuse(`build-id "${buildId}" does not name the clean HEAD ${head.slice(0, 7)}.`);
 }
-ok(`build ${buildId}, app-variant preview, ${REQUIRED_BINARIES.length} bundled files present`);
+ok(`build ${buildId}, app-variant preview, app-label WORKS, ${REQUIRED_BINARIES.length} bundled files present`);
 
 if (CHECK_ONLY) {
     console.log('\n--check: every guard passed; nothing was uploaded.');
@@ -177,4 +182,4 @@ if (!run('npx', ['wrangler', 'pages', 'deploy', DIST,
     refuse('wrangler pages deploy failed.');
 }
 console.log(`\nDeployed ${buildId} to https://${PROJECT}.pages.dev`);
-console.log('Read it back before saying so: build-id and app-variant on "/", short_name in the manifest, /api/runs 401 without a session.');
+console.log('Read it back before saying so: build-id, app-variant and app-label on "/", short_name in the manifest, /api/runs 401 without a session.');
