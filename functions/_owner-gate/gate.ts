@@ -474,6 +474,7 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
         body: [
           'このワークス版は、MILE をご購入いただいた方と、施工をご依頼いただいたオーナーさんにお使いいただいています。',
           'ご購入済みの方は、<a href="https://m3.tsunagi.app/restore">この端末で使えるように</a>してから開き直してください。',
+          `施工をご依頼いただいたオーナーさんは、<a href="${CONTACT_JA}">お問い合わせフォーム</a>からお申し出ください。確認できたら、この端末で開けるリンクをお送りします。`,
           '<a href="https://m3.tsunagi.app/mesh">MILE について</a>',
         ],
       },
@@ -482,12 +483,22 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
         body: [
           'This WORKS build is for those who have bought MILE and for owners whose cars we have worked on.',
           'If you have bought MILE, <a href="https://m3.tsunagi.app/restore?lang=en">set this device up</a> and open it again.',
+          `If we have worked on your car, <a href="${CONTACT_EN}">tell us through the contact form</a> and we will send you a link that opens it on this device.`,
           '<a href="https://m3.tsunagi.app/en/mesh">About MILE</a>',
         ],
       }
     );
   }
 }
+
+// The enquiry form, opened on its MESH-access topic — where an owner whose car
+// was worked on, but who bought no MILE, asks for access. Copied from
+// tsunagi-m3's data/contact.json (the apps cannot import it); the topic text has
+// to match the form's choice exactly for the prefill to take.
+const CONTACT_JA =
+  'https://docs.google.com/forms/d/e/1FAIpQLScBCN0uhg1b78Gjt2aAZmL_06HW5MQedWqlf2YptlmOag_tBg/viewform?usp=pp_url&amp;entry.1292632065=MESH%20%E3%81%AE%E3%82%A2%E3%82%AF%E3%82%BB%E3%82%B9%EF%BC%88%E9%96%8B%E3%81%91%E3%81%AA%E3%81%84%E3%83%BB%E6%96%BD%E5%B7%A5%E3%82%AA%E3%83%BC%E3%83%8A%E3%83%BC%E3%81%95%E3%82%93%E3%81%AE%E3%81%8A%E7%94%B3%E3%81%97%E5%87%BA%EF%BC%89';
+const CONTACT_EN =
+  'https://docs.google.com/forms/d/e/1FAIpQLSfQe6s3L871-tg6DYGVkCAhN7fmDAVcl4e_uDv9hBQNlvgBtQ/viewform?usp=pp_url&amp;entry.1292632065=MESH%20access%20(can%27t%20open%20it%20on%20this%20device)';
 
 // ── helpers with no state ────────────────────────────────────────────────────
 
