@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REQUIRED_BINARIES } from './bundled-files.mjs';
 import { strayBundledFiles } from './bundled-files-check.mjs';
+import { asOf, injectIntoHtml, meshProject, readSupporters } from '../../scripts/inject-supporters.mjs';
 
 /**
  * A build identifier the operator can read off the screen.
@@ -187,10 +188,30 @@ function identityAndServiceWorker(): Plugin {
     let outDir = '';
     let precache: string[] = [];
     let manifest: Manifest | null = null;
+    /**
+     * The CREDITS names (scripts/inject-supporters.mjs, a copy of tsunagi-m3/tools/credits): read
+     * from m3 once per build and written into the page, so the app reads them from its own
+     * document and the production build still makes no request. Null in dev and with
+     * M_SUPPORTERS=off; a read that fails stops the build.
+     */
+    let supporters: { v: 1; project: string; names: string[]; others: boolean; asOf: string } | null = null;
+    const supportersOff = process.env.M_SUPPORTERS === 'off';
 
     return {
         name: 'csl-identity-and-service-worker',
         configResolved(config) { outDir = resolve(config.root, config.build.outDir); },
+
+        async buildStart() {
+            if (this.meta.watchMode) return;
+            if (supportersOff) {
+                this.warn('supporters: OFF (M_SUPPORTERS=off) - this build carries no CREDITS names. Not for a release.');
+                return;
+            }
+            const project = meshProject(here('../..'));
+            const { names, others } = await readSupporters(project);
+            supporters = { v: 1, project, names, others, asOf: asOf() };
+            this.info?.(`supporters: ${names.length} name(s)${others ? ' + others' : ''} for ${project}`);
+        },
 
         // `vite dev` serves the source manifest, so the page's <link> resolves there too.
         configureServer(server) {
@@ -201,7 +222,8 @@ function identityAndServiceWorker(): Plugin {
         },
 
         transformIndexHtml(html, ctx) {
-            return brandHtml(html, ctx.server ? 'dev' : buildId);
+            const branded = brandHtml(html, ctx.server ? 'dev' : buildId);
+            return ctx.server ? branded : injectIntoHtml(branded, supporters);
         },
 
         generateBundle(_options, bundle) {
@@ -249,6 +271,8 @@ function identityAndServiceWorker(): Plugin {
             const variantMeta = [...html.matchAll(/<meta\s+name="app-variant"\s+content="([^"]*)"/gi)].map((m) => m[1]);
             if (variantMeta.length !== 1 || variantMeta[0] !== VARIANT) problems.push(`app-variant meta is ${JSON.stringify(variantMeta)}, expected ["${VARIANT}"]`);
             if ([...html.matchAll(/<meta\s+name="build-id"/gi)].length !== 1) problems.push('there must be exactly one build-id meta');
+            const lists = [...html.matchAll(/id="m-supporters"/g)].length;
+            if (lists !== (supportersOff ? 0 : 1)) problems.push(`${lists} CREDITS list(s) in index.html, expected ${supportersOff ? 0 : 1}`);
             for (const f of readdirSync(outDir).filter((name) => name.endsWith('.html'))) {
                 const doc = readFileSync(join(outDir, f), 'utf8');
                 if (/<meta\s+name="sync-token"/i.test(doc)) problems.push(`${f} carries a sync-token meta`);

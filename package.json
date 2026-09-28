@@ -1,5 +1,6 @@
 {
   "name": "e46m3-csl-converter",
+  "meshProject": "dme-migration",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",

@@ -57,6 +57,7 @@ import {
     type CloudRun, type CloudDiagnostic, type GateState,
 } from './sync';
 import { CloudPanel, PreviewNotice, PrivacyHeaderLink, when } from './cloud';
+import { CreditsButton, CreditsDialog } from './credits';
 import { acknowledgeNotice, noticeAcknowledged, noticeRequired } from './previewNotice';
 import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
 import { bundledNames } from '../bundled-files.mjs';
@@ -264,6 +265,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * an owner and a send. Production never opens it.
      */
     const [noticeOpen, setNoticeOpen] = useState(noticeRequired);
+    const [creditsOpen, setCreditsOpen] = useState(false);
     const confirmNotice = useCallback(() => {
         acknowledgeNotice();
         setNoticeOpen(false);
@@ -1584,10 +1586,15 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 {/* PRIVACY (preview only - the build that sends anything), ahead of the readouts
                     so it leads the right-hand cluster as tsunagi-m-chrome orders it. Here rather
                     than only in the SYNC panel, which exists on one screen with no cable in. */}
-                {preview && <div className="ml-auto flex shrink-0 items-center"><PrivacyHeaderLink /></div>}
+                {/* ...then MEDAL, CREDITS: who this is built on, and the MESH colophon. Every
+                    build, like TUNER's - the one item here that is an acknowledgement, not a tool. */}
+                <div className="ml-auto flex shrink-0 items-center gap-6">
+                    {preview && <PrivacyHeaderLink />}
+                    <CreditsButton onOpen={() => setCreditsOpen(true)} />
+                </div>
                 {/* Identity readouts, mono, right-aligned. The build id is here so the answer to
                     "which version is on that phone" is on the phone rather than in a changelog. */}
-                <div className={`${preview ? 'ml-3' : 'ml-auto'} flex shrink-0 flex-col items-end gap-0.5 leading-none`}>
+                <div className="ml-3 flex shrink-0 flex-col items-end gap-0.5 leading-none">
                     {/* Which build this is, once inside it: the manifest's name shows only on the
                         way in. WORKS on the owners' build, nothing in production. A <span>, not a
                         control - it says which URL this is and switches nothing. Amber, "not the
@@ -1866,6 +1873,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             />
         </main>
         {noticeOpen && <PreviewNotice onConfirm={confirmNotice} />}
+        {creditsOpen && <CreditsDialog onClose={() => setCreditsOpen(false)} buildId={BUILD_ID} />}
         </>
     );
 }

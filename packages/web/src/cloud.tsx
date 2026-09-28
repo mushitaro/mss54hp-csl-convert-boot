@@ -143,9 +143,9 @@ export function PrivacyLink(): ReactNode {
 }
 
 /**
- * The same PRIVACY, as the header carries it: the first of tsunagi-m-chrome's fixed links (this app
- * has only that one - no repository link, credits or guide of its own, and no menu sheet, since the
- * whole app is the phone layout). An icon at w-5 h-5 with its destination in `title`, neutral grey,
+ * The same PRIVACY, as the header carries it: the first of tsunagi-m-chrome's fixed links. This app
+ * carries it and the MEDAL (CREDITS, credits.tsx) - no repository link or guide of its own, and no
+ * menu sheet, since the whole app is the phone layout. An icon at w-5 h-5 with its destination in `title`, neutral grey,
  * inside a 44 px tap target.
  *
  * It is in the header so that it is reachable from every screen and with the cable in, not only
