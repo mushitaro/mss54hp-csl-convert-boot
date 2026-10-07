@@ -396,12 +396,14 @@ describe('the VANOS offsets and which camshafts the car has', () => {
         const tampered = Uint8Array.from(variant.pair);
         tampered[VANOS_A] = 0x12;
         tampered[VANOS_A + 1] = 0x34;
+        correctChecksums(tampered); // Keep the independent cam-value guard reachable.
         expect(() => buildVariant(tampered, { map: 'use', flap: 'present', cams: 'm3' }))
             .toThrow(/refusing to patch/);
 
         const wrongShape = Uint8Array.from(variant.pair);
         // The low byte: 0x00A4's high byte is already 0x00, so writing 0x00 there breaks nothing.
         wrongShape[VANOS_B + 0x13] = 0x00;   // break the signature, leave the value intact
+        correctChecksums(wrongShape); // Keep the independent layout guard reachable.
         expect(() => buildVariant(wrongShape, { map: 'use', flap: 'present', cams: 'm3' }))
             .toThrow(/not CSL 0401/);
     });

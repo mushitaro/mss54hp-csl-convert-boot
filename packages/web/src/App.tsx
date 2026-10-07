@@ -231,6 +231,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * ECU that records it. A stored claim would be a claim nothing could check.
      */
     const [probeDone, setProbeDone] = useState(false);
+    const [runFailed, setRunFailed] = useState(false);
     /** True while the run is stopped waiting for a human to cycle the ignition. */
     const [awaitingPowerCycle, setAwaitingPowerCycle] = useState(false);
     /** True while the session is talking to a simulator instead of a car. */
@@ -880,6 +881,12 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
     const runStage = useCallback(async () => {
         const session = sessionRef.current;
         if (!session || !stage || !backup) return;
+        if (runFailed) return;
+        // A locked program stage must stop before FAST ENTRY can erase a service block.
+        if (!practice && !HARDWARE_WRITE_ENABLED) {
+            setNotice({ kind: 'warn', text: c.lockedTitle });
+            return;
+        }
         setNotice(null);
         setWentHidden(false);
 
@@ -933,8 +940,10 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
 
             if (stage.kind === 'bootloader') {
                 const processor = stage.processor!;
+                // Synthetic practice SA0 cannot be reconciled against a real BMW ROM.
+                // Keep the live compatibility guard identical; choose matching fixture data.
                 const patched = patchToCsl(
-                    extractSa0(backup.image, processor), processor, cslSa0 ? referenceCslSa0(cslSa0, processor) : undefined);
+                    extractSa0(backup.image, processor), processor, !practice && cslSa0 ? referenceCslSa0(cslSa0, processor) : undefined);
                 for (const a of patched.anomalies) {
                     log(`SA0 ANOMALY 0x${a.offset.toString(16)}: this ECU has`
                         + ` 0x${a.derived.toString(16).padStart(2, '0')}, every reference has`
@@ -952,6 +961,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 log(`PLAN ${plan.steps.length} steps, point of no return at ${plan.pointOfNoReturn}`);
 
                 const outcome = await runBlReplace(session, plan, patched.sa0, { ...hooks, onPowerCycle });
+                if (!outcome.magicCleared) throw new Error(c.stageProbeMagicLeft);
                 if (!outcome.matchesIntended || !outcome.crcValid) {
                     // `differingOffsets` is capped at eight examples. Reporting its length said
                     // "8 bytes differ" for a bootloader that read back entirely wrong - a number
@@ -986,6 +996,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             log(`PLAN ${plan.steps.length} steps, ${plan.writeBytes} bytes, ${plan.eraseCount} erases`);
             const outcome = await runFlash(session, plan, programSource, {
                 ...hooks,
+                onPowerCycle,
                 verifyReadBack: true,
             });
             /**
@@ -999,7 +1010,10 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             if (!outcome.readBackAgreed) {
                 throw new Error(c.stageProgramReadUnreliable(outcome.readBackDisagreements.length));
             }
+            if (outcome.encodingFaulted) throw new Error(c.stageProgramEcuFault);
             if (!outcome.verified) throw new Error(c.stageProgramFailed(outcome.differingOffsets.length));
+            if (outcome.postCycleIdent && outcome.encodingFaulted === null) throw new Error(c.stageProgramCheckUnavailable);
+            if (!outcome.completed) throw new Error(c.programPowerCyclePending);
             setProgramDone(true);
             setNotice({ kind: 'ok', text: c.stageProgramDone(outcome.comparedBytes) });
             // The job is over. Leaving the operator on a finished RUN with an inert DONE gave them
@@ -1020,6 +1034,9 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 setNotice({ kind: 'warn', text: c.lockedTitle });
                 log(`REFUSED: ${error.message}`);
             } else {
+                // An ambiguous write or a failed post-cycle check must not offer another
+                // erase with the same stale workspace. Reconnect and inspect first.
+                setRunFailed(true);
                 setNotice({ kind: 'error', text: message(error) });
                 report(`RUN ${stage.kind.toUpperCase()}`, error);
             }
@@ -1035,7 +1052,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         setAcked(false);
         await identify();
         setStep('PLAN');
-    }, [stage, backup, programSource, practice, speed, c, log, showProgress, identify, cslSa0, report]);
+    }, [stage, backup, programSource, practice, speed, c, log, showProgress, identify, cslSa0, report, runFailed]);
 
     /**
      * Send this session to the project's D1, for judging afterwards.
@@ -1272,6 +1289,8 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         setProgramChoice('factory');
         setPatch({});
         setProgramDone(false);
+        setProbeDone(false);
+        setRunFailed(false);
         practiceDmeRef.current = null;
         setStep('LINK');
         setNotice(null);
@@ -1415,7 +1434,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             case 'SPEED':
                 return { label: 'NEXT', Icon: ArrowRight, onClick: goNext, disabled: speed === null };
             case 'REVIEW':
-                return { label: 'FLASH', Icon: Flame, onClick: goNext, disabled: !acked, danger: true };
+                return { label: 'FLASH', Icon: Flame, onClick: goNext, disabled: !acked || runFailed, danger: true };
             case 'RUN':
                 // The one face that is not an action: the run is stopped, waiting for a person to
                 // do the one thing software cannot. Not danger-red - the danger already happened,
@@ -1424,13 +1443,13 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                     return { label: 'POWER CYCLED', Icon: Check, onClick: confirmPowerCycle };
                 }
                 if (!job.next) return { label: 'DONE', Icon: Check, onClick: () => {}, disabled: true };
-                return { label: 'FLASH', Icon: Flame, onClick: () => void runStage(), danger: true };
+                return { label: 'FLASH', Icon: Flame, onClick: () => void runStage(), disabled: runFailed, danger: true };
             default:
                 return { label: 'WAIT', Icon: PlugZap, onClick: () => {}, disabled: true };
         }
     }, [busy, step, usbAvailable, ident, backup, backupMode, ecuMatch, stage, job, variant,
         patchChoice, program, allDone, speed, acked, awaitingPowerCycle, connect, identify,
-        runBackup, verifyAgainstFile, goNext, runStage, confirmPowerCycle]);
+        runBackup, verifyAgainstFile, goNext, runStage, confirmPowerCycle, runFailed]);
 
     /**
      * Why the hub cannot act, in one sentence, derived from the same condition that disables it.
@@ -1441,6 +1460,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      */
     const hubReason: string | null = useMemo(() => {
         if (busy) return null;
+        if (runFailed && (step === 'RUN' || step === 'REVIEW')) return c.runNeedsReconnect;
         if (step === 'LINK' && blocked === 'not-android') return c.hubNeedsAndroid;
         if (step === 'LINK' && blocked === 'no-webusb') return c.hubNeedsUsb;
         if (step === 'PLAN' && job.blocked) return c.targetUnknownBl;
@@ -1449,7 +1469,8 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         if (step === 'PLAN' && stage?.kind === 'program' && spDaten && !variant) return c.programPickPrompt;
         if (step === 'PATCH' && program !== null && 'error' in program) return c.patchFailed(program.error);
         if (step === 'PATCH' && patchChoice === null) return c.patchPickBoth;
-        if (step === 'RUN' && awaitingPowerCycle) return c.powerCycleNoCancel;
+        if (step === 'RUN' && awaitingPowerCycle) return stage?.kind === 'program'
+            ? c.programPowerCyclePending : c.powerCycleNoCancel;
         if (step === 'SPEED' && speed === null) return c.hubPickOne;
         if (step === 'REVIEW' && !acked) return c.hubScrollToAck;
         // A loaded capture that has not been checked, or has been checked and is not from this ECU,
@@ -1458,7 +1479,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         if (step === 'BACKUP' && ecuMatch?.same === false) return c.hubWrongEcu;
         return null;
     }, [busy, step, blocked, stage, job, allDone, spDaten, variant, patchChoice, program,
-        speed, acked, backup, ecuMatch, awaitingPowerCycle, c]);
+        speed, acked, backup, ecuMatch, awaitingPowerCycle, c, runFailed]);
 
     const linkState: LinkState =
         (busy && !awaitingPowerCycle) ? 'busy' : notice?.kind === 'error' ? 'error'
@@ -1468,8 +1489,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * One line in the reserved slot, chosen by priority rather than stacked.
      *
      * An error the operator has not dismissed outranks the standing reason a control is inert,
-     * which outranks a background fact about the build. Three messages in a 34px box would be
-     * three truncated messages.
+     * which outranks a background fact about the build. The reserved slot scrolls long messages.
      */
     const slot: { kind: NoticeKind; text: string } | null =
         // Outranks even an error, because it casts doubt on what the error - or the success - is
@@ -1523,7 +1543,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         let loaderBytes: number;
         try {
             patched = patchToCsl(
-                extractSa0(backup.image, processor), processor, cslSa0 ? referenceCslSa0(cslSa0, processor) : undefined);
+                extractSa0(backup.image, processor), processor, !practice && cslSa0 ? referenceCslSa0(cslSa0, processor) : undefined);
             loaderBytes = assemble(replaceSource).bytes.length;
         } catch { return null; }
         /**
@@ -1552,7 +1572,7 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
 
         return { kind: 'bootloader', processor, patched, loaderBytes, ...identity };
     }, [stage, backup, speed, ident, spDaten, variant, patchChoice, program,
-        programChoice, patchedProgram, cslSa0]);
+        programChoice, patchedProgram, cslSa0, practice]);
 
     /**
      * What the choice is worth, over the read it actually applies to.
@@ -1662,7 +1682,8 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 control to be. */}
             <div className="flex min-h-0 flex-1 flex-col">
             {/* The question. The only scrolling region. */}
-            <div className="h-[61.8%] min-h-0 overflow-y-auto">
+            {/* A new step starts at its heading, not at the previous step's scrolled log. */}
+            <div key={`${step}:${stage?.id ?? ''}`} data-guide className="min-h-0 flex-1 overflow-y-auto">
                 {step === 'LINK' && <LinkStep blocked={blocked} installed={installed} />}
                 {showCloud && (
                     <CloudPanel
@@ -1782,17 +1803,37 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                             : undefined}
                     />
                 )}
+                {/* Supporting operations belong with their data, not in the 46px thumb row.
+                    At 320x568 the old four-button row put Save log 22.5px below the screen. */}
+                {!busy && (
+                    <div data-support-actions className="flex flex-col items-start px-4">
+                        {backup && !backup.verified && (
+                            <SubAction label={c.retry} onClick={() => { setBackup(null); void runBackup(); }} />
+                        )}
+                        {backup?.verified && !fastLocked && (
+                            <SubAction label={c.backupBoost} onClick={() => {
+                                if (window.confirm(c.backupBoostConfirm)) void runBackup(true);
+                            }} />
+                        )}
+                        {events.length > 0 && (
+                            <SubAction label={c.saveLog} onClick={() => downloadLog(events, logFilename(new Date(), practice))} />
+                        )}
+                        {backup && preview && uploadSupported() && (
+                            <SubAction label={c.uploadRun} onClick={() => void uploadSession()} />
+                        )}
+                    </div>
+                )}
                 <EventLog lines={events} />
             </div>
 
             {/* The control band: 38.2%. Its two fixed rows are the reserved slots, and the hub
                 takes whatever is between them - so the hub moves with the viewport but never with
                 the state, which is the property that matters. */}
-            <div className="flex h-[38.2%] min-h-0 flex-col">
-                {/* Reserved notice slot (34) - always here, empty or not. */}
+            <div data-controls className="flex h-[38.2%] min-h-[198px] shrink-0 flex-col">
+                {/* Floor = notice 64 + hub/halo band 88 + sub-actions 46. The guide yields first. */}
                 <Notice kind={slot?.kind ?? 'info'}>{slot?.text}</Notice>
 
-                <div className="flex min-h-0 flex-1 items-center justify-center">
+                <div className="flex min-h-[88px] flex-1 items-center justify-center">
                     <Hub {...hub} />
                 </div>
 
@@ -1812,37 +1853,6 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                             tone="danger"
                             onClick={() => void disconnect()}
                         />
-                    )}
-                    {!busy && backup && !backup.verified && (
-                        <SubAction label={c.retry} onClick={() => { setBackup(null); void runBackup(); }} />
-                    )}
-                    {/* The only way to exercise the reversible write tier on a car. Offered solely
-                        when there is a verified capture to take the span map from and nothing else
-                        is stopping fast entry - `fastLocked` carries both the write-lock reason and
-                        the blank-sector one, and an inert control with an unexplained reason is
-                        worse than no control. */}
-                    {!busy && backup?.verified && !fastLocked && (
-                        <SubAction
-                            label={c.backupBoost}
-                            onClick={() => {
-                                if (window.confirm(c.backupBoostConfirm)) void runBackup(true);
-                            }}
-                        />
-                    )}
-                    {/* Needs no network and no token, so it is offered as soon as there is
-                        anything to save - including after a session that failed, which is the one
-                        whose log matters most. */}
-                    {!busy && events.length > 0 && (
-                        <SubAction
-                            label={c.saveLog}
-                            onClick={() => downloadLog(events, logFilename(new Date(), practice))}
-                        />
-                    )}
-                    {/* Offered whether or not the two passes agreed: a capture that disagreed with
-                        itself is the MOST interesting one to look at afterwards, and refusing to
-                        send it would lose the only evidence of the failure. */}
-                    {!busy && backup && preview && uploadSupported() && (
-                        <SubAction label={c.uploadRun} onClick={() => void uploadSession()} />
                     )}
                     {/* Only while nothing is running and nothing is connected - the whole row is
                         hidden during a transfer, which is exactly the guarantee the no-skipWaiting

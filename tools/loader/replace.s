@@ -25,24 +25,24 @@
 ;      2  move VBR to a RAM table     - SA0 is about to stop existing
 ;      3  copy the flash routines to RAM
 ;      4  CLEAR THE MAGIC             - disarm before anything destructive
-;      5  sanity-check the staged image
+;      5  validate staged image and master counter shape/capacity
 ;      6  erase SA0
 ;      7  program 16 KiB into SA0
 ;      8  verify, and retry from 6 on mismatch
-;      9  spin; the watchdog resets us into the new bootloader
+;      9  master only: append/verify program marker, then clear old data marker
+;     10  spin; the watchdog resets us into the new bootloader
 ;
 ;  Step 4 comes before step 5 deliberately. If the staged image were bad and
 ;  the magic were still set, the ECU would re-enter this loader on every
 ;  power-up forever - a brick with an intact bootloader, recoverable only by
 ;  BDM. Clearing the magic first means a refusal at step 5 leaves an ECU that
-;  boots normally.
+;  follows the resident diagnostic path in its existing programming mode.
 ;
 ;  From step 6 the ECU is committed: SA0 holds no reset vector until step 7
 ;  finishes, and the magic can no longer help because the magic check itself
 ;  lives in SA0. That window is irreducible. It is also short, needs no
-;  communication, and is the only part of the operation that a power failure
-;  can turn into a brick - which is why the operator requirement is a bench
-;  supply, not a battery.
+;  communication. It is an unavoidable power-loss risk; PC execution does not
+;  rule out other electrical, peripheral or flash-failure modes.
 ;
 ;  ## Why VBR must move (step 2)
 ;
@@ -51,8 +51,9 @@
 ;  which SR = $2700 does not mask - would fetch its vector from erased flash,
 ;  get $FFFFFFFF, and take a double bus fault. The CPU halts and the ECU is
 ;  gone. So before the erase, VBR points at a RAM table whose every entry is a
-;  halt loop in RAM. An exception then parks the CPU harmlessly and the
-;  watchdog resets it.
+;  halt loop in RAM. This avoids fetching an erased exception vector, but
+;  does NOT restore SA0. An exception after erase can still require BDM:
+;  the watchdog may reset into an incomplete bootloader.
 ; ============================================================================
 
 ; ---- RAM layout ------------------------------------------------------------
@@ -72,6 +73,7 @@ MAGICHI     equ     $0000fffc
 MAGICLO     equ     $0000fffe
 RESETVEC    equ     $00009004       ; the image's initial PC longword
 EXPECTPC    equ     $00000200       ; every MSS54 bootloader starts here
+IMAGECRC    equ     $0000d000       ; full 16 KiB CRC-16/ARC, then complement
 
 WDOG        equ     $00fffa27
 RETRIES     equ     3
@@ -87,8 +89,8 @@ start:
         lea     STACKTOP,a7
 
 ; ---- 2. build a RAM vector table and point VBR at it -----------------------
-; Every vector goes to a halt loop in RAM. After SA0 is erased this is the
-; only thing standing between an unexpected exception and a dead ECU.
+; Every vector goes to a halt loop in RAM. This avoids fetching erased vectors;
+; it does not recover an exception after SA0 has been erased.
         lea     HALTADDR,a0
         move.w  #$60fe,(a0)             ; BRA.B to itself - a two-byte halt
 
@@ -125,7 +127,7 @@ copy2:  move.b  #$55,WDOG
 
 ; ---- 4. disarm: clear the magic -------------------------------------------
 ; 5AA556C9 -> 00000000 only clears bits, so no erase is needed. From here a
-; failure leaves an ECU that boots normally.
+; failure BEFORE the SA0 erase leaves the original bootloader intact.
         lea     MAGICHI,a1
         moveq   #0,d1
         jsr     PROGADDR_ONE
@@ -146,10 +148,59 @@ copy2:  move.b  #$55,WDOG
         cmpi.l  #EXPECTPC,d0
         bne.w   giveup
 
+; Master must leave the persistent mode ready for program erase. Data erase
+; used to stage this loader left 00FF in the AIF counter. Reset does not clear
+; it, so a subsequent program erase would return verify=8 without erasing.
+; Validate the entire counter BEFORE touching SA0. Only the canonical data
+; marker with at least eight free words is accepted. Slave keeps data mode;
+; the master's next program erase makes both CPUs enter program mode.
+validate_counter:
+        moveq   #0,d5
+        cmpi.w  #$4d4d,$00003ffc
+        bne.w   mode_ready
+        lea     $00004800,a3
+        moveq   #54,d4
+counter_scan:
+        move.b  #$55,WDOG
+        move.b  #$aa,WDOG
+        move.w  (a3),d0
+        cmpi.w  #$00ff,d0
+        beq.w   counter_found
+        tst.w   d0
+        bne.w   giveup
+        addq.l  #2,a3
+        dbra    d4,counter_scan
+        bra.w   giveup
+counter_found:
+        movea.l a3,a4
+        addq.l  #2,a4
+        movea.l a4,a0
+counter_tail:
+        move.b  #$55,WDOG
+        move.b  #$aa,WDOG
+        cmpi.w  #$ffff,(a0)+
+        bne.w   giveup
+        move.l  a0,d0
+        cmpi.l  #$00004880,d0
+        bcs.w   counter_tail
+        moveq   #1,d5
+mode_ready:
+
 ; ---- 6-8. erase, program, verify, retry ------------------------------------
         moveq   #RETRIES,d6
 
 attempt:
+; Recheck ALL staged bytes before every erase, including bytes outside BMW's
+; built-in CRC range. The host writes IMAGECRC and its complement and verifies
+; the entire staged sector before arming. Corruption here must not erase SA0.
+        lea     IMAGESRC,a0
+        bsr.w   image_crc
+        cmp.w   IMAGECRC,d0
+        bne.w   giveup
+        eori.w  #$ffff,d0
+        cmp.w   IMAGECRC+2,d0
+        bne.w   giveup
+
         move.b  #$55,WDOG
         move.b  #$aa,WDOG
 
@@ -180,9 +231,49 @@ vloop:  move.b  #$55,WDOG
         subq.l  #1,d7
         bne.b   vloop
 
+; Independent CRC over the programmed SA0, rather than equality alone: equal
+; corruption of source and destination after staging must not report success.
+        lea     SA0BASE,a0
+        bsr.w   image_crc
+        cmp.w   IMAGECRC,d0
+        bne.b   nextattempt
+
+; Append FF00 and verify it BEFORE clearing the previous 00FF. No SA1 erase,
+; no VIN/AIF-log rewrite, and no interval with only zero counter words. This
+; uses the same persistent marker values as resident 2D16/2E0C. Interrupted
+; NOR programming is still a hardware risk, including a partial old marker.
+        tst.b   d5
+        beq.w   done
+        movea.l a4,a1
+        move.w  #$ff00,d1
+        jsr     PROGADDR_ONE
+        tst.b   d0
+        bne.w   giveup
+        cmpi.w  #$ff00,(a4)
+        bne.w   giveup
+; Clear the old marker in two monotonic steps. A partial FF -> 0F can
+; only leave a low nibble F; a partial 0F -> 00 cannot produce 00F5.
+; Thus this handoff cannot accidentally select the reset handler's 00F5
+; special-entry branch even when a word program only clears some bits.
+        movea.l a3,a1
+        move.w  #$000f,d1
+        jsr     PROGADDR_ONE
+        tst.b   d0
+        bne.w   giveup
+        cmpi.w  #$000f,(a3)
+        bne.w   giveup
+        movea.l a3,a1
+        moveq   #0,d1
+        jsr     PROGADDR_ONE
+        tst.b   d0
+        bne.w   giveup
+        tst.w   (a3)
+        bne.w   giveup
+
 ; ---- 9. success ------------------------------------------------------------
 ; Stop servicing the watchdog. It resets the CPU; the reset handler now runs
-; the NEW bootloader, finds no magic, and boots normally. Leaving by watchdog
+; the NEW bootloader, finds no magic, and enters resident diagnostics. The master
+; remains in program mode until the subsequent program/calibration sequence. Leaving by watchdog
 ; rather than by RESET+JMP means we depend on nothing else being correct.
 done:   bra.b   done
 
@@ -194,6 +285,27 @@ nextattempt:
 ; step 6 the ECU is fine; if after, it needs BDM either way, and spinning is
 ; no worse than resetting into an invalid SA0.
 giveup: bra.b   giveup
+
+; CRC-16/ARC: init 0, reflected polynomial A001, no final XOR.
+; A0 = 16 KiB to check; D0 = CRC. Clobbers D1/D2/D7, preserves retry count D6.
+image_crc:
+        moveq   #0,d0
+        move.w  #$3fff,d7
+crcbyte:
+        move.b  #$55,WDOG
+        move.b  #$aa,WDOG
+        moveq   #0,d1
+        move.b  (a0)+,d1
+        eor.w   d1,d0
+        moveq   #7,d2
+crcbit:
+        lsr.w   #1,d0
+        bcc.b   crcnoxor
+        eori.w  #$a001,d0
+crcnoxor:
+        dbra    d2,crcbit
+        dbra    d7,crcbyte
+        rts
 
 ; ============================================================================
 ;  RAM-resident routines. Everything below is copied to RAM before use.

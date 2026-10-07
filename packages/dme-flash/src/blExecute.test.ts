@@ -44,7 +44,7 @@ async function convert(processor: Processor, options: { failPowerCycle?: boolean
                 // What the reset handler does: find the magic, run the loader. The loader's own
                 // behaviour is proven on the CPU emulator; here it is applied directly so this test
                 // stays about the telegram sequence.
-                runLoader(image, processor, intended);
+                dme.powerCycle();
             },
         });
         return { outcome, events, phases, image, dme, plan, intended };
@@ -104,8 +104,9 @@ describe('replacing a bootloader over DS2, against a simulated ECU', () => {
         expect(magic).toBe(0);
     });
 
-    it('touches nothing outside the bootloader and the staging sector', async () => {
+    it('changes only SA0, staging and the exact resident counter update', async () => {
         const before = practiceEcuImage();
+        for (const base of [0, 0x80000]) before[base + 0x4808] = 0; // 00FF marker
         const { image } = await convert('slave');
         const stagingStart = 0x80000 + 0x8000;
         for (let i = 0; i < image.length; i++) {
@@ -115,8 +116,9 @@ describe('replacing a bootloader over DS2, against a simulated ECU', () => {
         }
     });
 
-    it('leaves the service block - VIN, AIF, flash counter - exactly as it found it', async () => {
+    it('preserves service bytes except the resident calibration marker', async () => {
         const before = practiceEcuImage();
+        for (const base of [0, 0x80000]) before[base + 0x4808] = 0; // 00FF marker
         const { image } = await convert('slave');
         for (let i = 0x84000; i < 0x86000; i++) expect(image[i], `0x${i.toString(16)}`).toBe(before[i]);
     });
@@ -141,10 +143,9 @@ describe('replacing a bootloader over DS2, against a simulated ECU', () => {
             // Corrupt the sector under the executor after it has been written: the read-back will
             // not match what the executor believes it sent.
             const original = session.readWindow.bind(session);
-            let calls = 0;
             (session as unknown as { readWindow: typeof original }).readWindow = async (a, l) => {
                 const bytes = await original(a, l);
-                if (calls++ === 0) bytes[0x40] = (bytes[0x40] ?? 0) ^ 0xff;
+                if (a === plan.ds2Address) bytes[0x40] = (bytes[0x40] ?? 0) ^ 0xff;
                 return bytes;
             };
             await expect(runBlReplace(session, plan, intended, { onPowerCycle: async () => {} }))

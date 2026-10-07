@@ -27,7 +27,7 @@ import { assertFlashable } from './flashSequence';
 import { FULL_IMAGE_LENGTH } from './imageLayout';
 import { CENSORED_RANGE } from './fullSpaceRead';
 
-export type FlashPhase = 'login' | 'erase' | 'write' | 'verify' | 'reset' | 'done';
+export type FlashPhase = 'login' | 'erase' | 'write' | 'finish' | 'verify' | 'reset' | 'done';
 
 export interface FlashProgress {
     readonly phase: FlashPhase;
@@ -37,6 +37,8 @@ export interface FlashProgress {
 }
 
 export interface FlashHooks {
+    /** Resolve only after key OFF, a 10-second wait, then key ON (engine stopped). */
+    readonly onPowerCycle?: () => Promise<void>;
     readonly onProgress?: (p: FlashProgress) => void;
     readonly onEvent?: (line: string) => void;
     /**
@@ -50,6 +52,9 @@ export interface FlashHooks {
 }
 
 export interface FlashOutcome {
+    /** Completion additionally requires the manual ignition cycle and a fresh diagnostic session. */
+    readonly completed: boolean;
+    readonly postCycleIdent: string | null;
     readonly writeBytes: number;
     readonly eraseCount: number;
     /**
@@ -101,14 +106,28 @@ export async function runFlash(
     image: Uint8Array,
     hooks: FlashHooks = {},
 ): Promise<FlashOutcome> {
+    plan = {
+        ...plan, windows: plan.windows.map(w => ({ ...w })),
+        steps: plan.steps.map(s => ({ ...s, data: s.data?.slice() })),
+    };
+    image = image.slice();
     // Before the first byte. A plan that would erase a protected sector must not reach a login.
     assertFlashable(plan);
     if (image.length !== FULL_IMAGE_LENGTH) {
         throw new SessionError(`image is ${image.length} bytes, expected a full ${FULL_IMAGE_LENGTH}`);
     }
+    for (const step of plan.steps) {
+        if (step.kind !== 'write') continue;
+        const expected = image.subarray(step.imageOffset!, step.imageOffset! + step.data!.length);
+        if (expected.length !== step.data!.length || expected.some((b, i) => b !== step.data![i])) {
+            throw new SessionError('flash plan bytes do not match the source image');
+        }
+    }
 
     const say = (line: string): void => hooks.onEvent?.(line);
+    await session.preflightProgramming(plan.windows.some(w => w.kind === 'program') ? 'program' : 'calibration');
     let written = 0;
+    let activeKind: 'program' | 'calibration' | undefined;
     const report = (phase: FlashPhase, note: string): void =>
         hooks.onProgress?.({ phase, note, written, total: plan.writeBytes });
 
@@ -121,6 +140,7 @@ export async function runFlash(
                 break;
 
             case 'erase':
+                activeKind = step.ds2Address === 0xd00000 ? 'program' : 'calibration';
                 report('erase', step.note);
                 await session.eraseWindow(step.ds2Address!);
                 say(`ERASED 0x${step.ds2Address!.toString(16)}`);
@@ -132,15 +152,36 @@ export async function runFlash(
                 report('write', step.note);
                 break;
 
+            case 'finish':
+                report('finish', 'closing the programming session before read-back');
+                {
+                    const intermediate = activeKind === 'program' && plan.windows.some(w => w.kind === 'calibration');
+                    await session.finishProgramming(intermediate);
+                    if (intermediate) {
+                        // Resident Finish can report 0F while correctly changing
+                        // 66 -> 3C because staging replaced the calibration. It
+                        // is not overall success. Prove the program now, before
+                        // any next erase; final Finish remains strict.
+                        for (const w of plan.windows.filter(w => w.kind === 'program')) {
+                            const expected = image.subarray(w.imageOffset, w.imageOffset + w.length);
+                            for (let pass = 0; pass < 2; pass++) {
+                                const actual = await session.readWindow(w.ds2Address, w.length);
+                                if (actual.length !== expected.length || actual.some((b, i) => b !== expected[i])) {
+                                    throw new SessionError('intermediate program read-back failed; calibration was not erased');
+                                }
+                            }
+                        }
+                        say('PROGRAM pair read back twice after intermediate Finish; calibration still required');
+                    } else say('FINISH acknowledged');
+                }
+                break;
+
             case 'verify-checksum':
-                // The DME's own verdict, which is cheap and is not the same thing as a read-back:
-                // it reports whether the ECU thinks its areas are intact, not whether they hold the
-                // bytes that were sent.
                 report('verify', step.note);
                 break;
 
             case 'reset':
-                report('reset', step.note);
+                // Manual ignition cycle is requested only AFTER verification below succeeds.
                 break;
         }
     }
@@ -187,13 +228,40 @@ export async function runFlash(
     let encodingFaulted: boolean | null = null;
     try {
         encodingFaulted = (await session.encodingChecksum()).anyFaulted;
+        if (encodingFaulted) verified = false;
         say(`ECU self-check reports ${encodingFaulted ? 'a FAULTED area' : 'every area clean'}`);
     } catch {
         // Not every DME answers this, and it is a report rather than a gate.
     }
 
-    report('done', 'program write complete');
+    let postCycleIdent: string | null = null;
+    let completed = false;
+    if (verified && hooks.onPowerCycle) {
+        report('reset', 'key OFF, wait 10 seconds, then key ON; do not start the engine');
+        say('WAITING for manual ignition OFF / 10 seconds / ON');
+        await hooks.onPowerCycle();
+        try {
+            postCycleIdent = await session.resumeAfterPowerCycle();
+        } catch (error) {
+            throw new SessionError('Writing and read-back passed, but post-cycle reconnection/IDENT failed. '
+                + 'Keep the engine stopped and check the connection; do not assume another erase/write is required. '
+                + `${error instanceof Error ? error.message : String(error)}`);
+        }
+        say(`POST-CYCLE IDENT: ${postCycleIdent}`);
+        // Reinitialization may reveal a fault that was not visible in the old session.
+        try {
+            encodingFaulted = (await session.encodingChecksum()).anyFaulted;
+        } catch {
+            encodingFaulted = null;
+            say('Post-cycle ECU self-check unavailable; completion cannot be confirmed');
+        }
+        if (encodingFaulted) verified = false;
+        completed = verified && encodingFaulted === false;
+    }
+    if (completed) report('done', 'write verified and ignition cycle confirmed; fresh IDENT received');
+    else say('NOT COMPLETE: verification and a confirmed ignition cycle with fresh IDENT are required');
     return {
+        completed, postCycleIdent,
         writeBytes: plan.writeBytes, eraseCount: plan.eraseCount, verified, differingOffsets,
         comparedBytes, readBackAgreed, readBackDisagreements, encodingFaulted,
     };

@@ -46,37 +46,14 @@
  */
 export const HARDWARE_WRITE_ENABLED = false as const;
 
-/**
- * How much of an ECU an operation can take away.
- *
- *  - `reversible`   FAST ENTRY, and nothing else: erase the Free Identifiers sector and put it
- *                   straight back. One 8 KiB sector, the bytes that go back were read off the same
- *                   DME moments earlier, `recoverFastEntry` exists for the failure in between, and
- *                   the reference tool has done it on real cars more than twenty times without
- *                   one. It never touches SA0 and it never touches the magic.
- *  - `irreversible` Arming, and the bootloader replacement. The magic at 0xFFFC is read by the
- *                   reset handler at 0x24A BEFORE the SIM, the stack or the K-line come up, so
- *                   from the moment it is programmed a loader that does not run cannot be reached
- *                   over OBD again - with SA0 perfectly intact. There is no rehearsal: the first
- *                   arming is the first execution.
- *
- * One switch used to cover both. That put a twenty-times-proven, recoverable operation behind the
- * same gate as the point of no return, so the only way to exercise the write path on a car at all
- * was to also authorise the one thing BDM insures against. The consequences differ by orders of
- * magnitude; the gates now do too.
+/** Address-based tiers are retained for future bench work. Both are locked on hardware.
+ * `reversible` is a historical name, not a guarantee: SA1 includes censored bytes and a
+ * power loss during erase/restore cannot be recovered by the host.
  */
 export type WriteTier = 'reversible' | 'irreversible';
 
-/**
- * FAST ENTRY only. Open, so the boosted read can be exercised on a car.
- *
- * What this authorises is bounded by `tierForAddress` below, which reads the address out of the
- * telegram: only the two Free Identifiers sectors and the fast-entry control addresses are
- * reversible, and everything else - the staging area, the magic, SA0 - stays behind
- * `HARDWARE_WRITE_ENABLED`. It is not a general write permission and it cannot become one by
- * anybody labelling an operation differently.
- */
-export const FAST_ENTRY_WRITE_ENABLED: boolean = true;
+/** FAST ENTRY remains available only in simulation. Use 9600-baud reads on hardware. */
+export const FAST_ENTRY_WRITE_ENABLED: boolean = false;
 
 /**
  * The two Free Identifiers sectors, in DS2 address space.
@@ -128,8 +105,7 @@ export class WriteLockedError extends Error {
     constructor(what: string) {
         super(
             `refusing to build "${what}": hardware writes are locked.`
-            + ' Set HARDWARE_WRITE_ENABLED in packages/dme-flash/src/writeLock.ts to true when you'
-            + ' intend to write to a real ECU.');
+            + ' Practice mode can exercise this operation without enabling hardware writes.');
         this.name = 'WriteLockedError';
     }
 }

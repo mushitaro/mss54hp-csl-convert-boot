@@ -9,6 +9,7 @@
  * The transport is faked, not the link. `Ds2Link` does its own framing, its own echo check and its
  * own retry loop in every case.
  */
+import { withSimulatedEcu } from './writeLock';
 import { describe, it, expect } from 'vitest';
 import { Ds2Link, Ds2LinkError, EchoMismatchError, type ByteTransport } from './transport';
 import { buildDs2Frame, classifyEchoMismatch, DME_DS2_ADDRESS, Ds2Status } from './ds2';
@@ -147,16 +148,19 @@ describe('a write telegram', () => {
      * write path is the one that runs after an erase, so one lost telegram failed an entire flash
      * on an ECU whose program window was already gone.
      */
-    it('is retried when the telegram is lost on the wire', async () => {
+    it('never blindly replays a write after losing its ACK', async () => {
         const t = new ScriptedTransport({ responses: [null, ack()] });
-        const response = await linkOver(t).transceiveWrite(new Uint8Array([0x00]));
-        expect(response.ok).toBe(true);
+        Object.assign(t, { simulated: true });
+        await withSimulatedEcu(async () => {
+            await expect(linkOver(t).transceiveWrite(new Uint8Array([0x07, 0x02, 0, 0, 0, 2, 0, 0]))).rejects.toThrow();
+        });
+        expect(t.events.filter(e => e === 'write')).toHaveLength(1);
     });
 
     it('still refuses to be sent while the write lock is shut, on every attempt', async () => {
         // A retry loop must never become a route around the gate.
         const t = new ScriptedTransport({ responses: [null, ack()] });
-        await expect(linkOver(t).transceiveWrite(new Uint8Array([0x07, 0x00])))
+        await expect(linkOver(t).transceiveWrite(new Uint8Array([0x07, 0x02, 0x20, 0, 0, 0, 0])))
             .rejects.toMatchObject({ kind: 'refused-by-write-lock' });
         // Refused before anything reached the wire, and not tried again.
         expect(t.events).not.toContain('write');

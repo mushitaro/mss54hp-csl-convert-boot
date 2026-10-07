@@ -369,14 +369,14 @@ describe('the write lock, on the one path authorised to erase a service block', 
      * `toDs2Address` is checked two tests down, and `tierForAddress` is checked exhaustively in
      * `writeTier.test.ts`.
      */
-    it('builds the erase, because the sector it erases is recoverable', () => {
+    it('locks service erases on hardware', () => {
         expect(HARDWARE_WRITE_ENABLED, 'arming is still locked').toBe(false);
-        expect(buildFastEntryEraseTelegram('master')[0]).toBe(0x07);
-        expect(buildFastEntryEraseTelegram('slave')[0]).toBe(0x07);
+        expect(() => buildFastEntryEraseTelegram('master')).toThrow(/locked/);
+        expect(() => buildFastEntryEraseTelegram('slave')).toThrow(/locked/);
     });
 
-    it('builds the restore write, which is what makes the erase recoverable', () => {
-        expect(buildFastEntryWriteTelegram('master', 0x4000, new Uint8Array(2))).toHaveLength(7);
+    it('locks service writes on hardware', () => {
+        expect(() => buildFastEntryWriteTelegram('master', 0x4000, new Uint8Array(2))).toThrow(/locked/);
     });
 
     it('would still refuse an address outside the sector even unlocked', () => {

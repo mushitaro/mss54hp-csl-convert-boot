@@ -1,7 +1,7 @@
 /**
  * The jump this whole project rests on, executed instead of assumed.
  *
- * Every other test about the loader starts by writing `cpu.pc = 0x8000` - it constructs the state
+ * Direct-entry loader tests start by writing `cpu.pc = 0x8000` - they construct the state
  * that exists AFTER the reset handler has decided to run the staged code. That decision is the one
  * irreversible act in the tool: the moment the magic is programmed, either the DME jumps to 0x8000
  * on every power-up or it does not, and if the disassembly was read wrong in either direction the
@@ -62,14 +62,16 @@ interface Run {
 /**
  * The AIF boot-mode area the reset handler reads before it ever looks at the magic.
  *
- * **This is the difference between a distributed file and a car**, and until it was parameterised
- * every test below ran the wrong one. A file that has been through SP-DATEN or a forum post has
+ * These are two fixture states, neither of which represents a completed staging erase.
+ * A file that has been through SP-DATEN or a forum post can have
  * SA1 blanked to 0xFF, so the word at 0x4800 is non-zero immediately and `0x21A` branches straight
- * to the magic check. A real DME has eight zero bytes there and the handler walks past them, finds
+ * to the magic check. The normal-mode dump has eight zero bytes there and the handler walks past them, finds
  * 0xFFFF at 0x4808, and goes to `0x22A: jsr $10400` - BMW's application init - first.
  *
  * Verified on four combinations: a real standard-M3 dump and the CSL 0401 reference image, each
  * with its own AIF and with the other one's. The program makes no difference; the AIF decides.
+ * Actual staging appends 00FF through the resident erase handler; that reset route and loader
+ * execution are covered without application-init bypasses in residentWorkflow.test.ts.
  */
 type AifState = 'blanked' | 'real-car';
 const AIF_AT = 0x4800;
@@ -135,6 +137,7 @@ function boot(options: { armed: boolean; budget?: number; aif?: AifState }): Run
         }
         if (machine.watchdogFired) { stoppedBecause = 'watchdog fired'; break; }
     }
+    stoppedBecause += ` pc=${cpu.pc.toString(16)} violations=${JSON.stringify(machine.violations.slice(-3))}`;
     return { trace, reachedLoader, reachedTrampoline, reachedMagicCheck, stoppedBecause };
 }
 
@@ -262,13 +265,13 @@ describe('the reset handler, run from the reset vector', () => {
         expect(runImage(image).reachedLoader, 'a partial magic must not arm the ECU').toBe(false);
     });
 
-    maybe('takes the application-init route when the AIF looks like a real car', () => {
+    maybe('takes application init for untouched normal-mode AIF, before staging', () => {
         // The route, not the outcome. Which branch `0x21A` takes is decided by data, and this is
         // the one thing about the real-car path that is settled: a blanked AIF goes straight to
         // the magic check, a real one goes through BMW's application init first.
         //
         // Every other test in this file boots a distributed image, so every other test takes the
-        // short route. On the car it will be the long one.
+        // short route. Actual staging records 00FF and also takes the short route.
         const blanked = boot({ armed: true, aif: 'blanked' });
         expect(blanked.reachedMagicCheck).toBe(true);
         expect(blanked.trace, 'a blanked AIF must not reach application init').not.toContain(0x10400);
@@ -278,33 +281,17 @@ describe('the reset handler, run from the reset vector', () => {
     });
 
     /**
-     * A harness limit, pinned. **Not an open safety question** - that one is settled elsewhere.
-     *
-     * Whether the real-car route reaches 0x24A is answered by the bootloader's own code, not by
-     * this emulator. `jsr $10400` returns to 0x230, which falls through `cmpi.w #$f500,(a2)` and
-     * `cmpi.w #$00f5,(a2)` to `0x23A: bne.w $24a`. That runs on EVERY start, with or without the
-     * magic - `0x254: bne.b $25c` is what sends an unarmed DME on to its normal boot. So every
-     * time any of these cars has ever started, this route called 0x10400, returned, and reached
-     * the magic check. Arming changes the result of the comparison, not the path to it.
-     * See docs/bootloader-replacement.md §5.2.
-     *
-     * What remains true is that this harness cannot execute it. Application init is outside the
-     * envelope the emulator was validated in (`bmwStubs.test.ts` runs BMW's flash stubs - small,
-     * self-contained routines). Three real modelling defects were found and fixed by trying:
-     * 24-bit address decoding, TPU parameter RAM at 0xFFFF00, and LINK/UNLK in the core. What
-     * stops it now is the next missing piece - MOVEM with displacement addressing, and the DPRAM
-     * at 0x13F800 that the application touches.
-     *
-     * **A failure here is good news**: it means the harness got further. Re-derive what it now
-     * proves before deleting the test.
+     * Evidence of the boundary of this harness, NOT a successful full boot test.
+     * After implementing MOVEM displacement the firmware reaches 0x11934/0x1193A,
+     * waiting for the byte at 0xFFE5CE after calling 0x40722. Peripheral/interrupt
+     * completion is not modelled. Do not force that byte to declare a boot passed.
+     * In particular, a static return address does not prove application init returns.
      */
-    maybe('cannot be executed all the way here - HARNESS LIMIT, the route itself is settled', () => {
+    maybe('records the unresolved normal-application peripheral wait without claiming loader entry', () => {
         const run = boot({ armed: true, aif: 'real-car', budget: 5_000_000 });
         expect(run.trace).toContain(0x10400);
-        expect(
-            run.reachedMagicCheck,
-            'the harness got further than it could - re-derive what it proves, then delete this',
-        ).toBe(false);
+        expect(run.stoppedBecause).toContain('watchdog fired pc=1193');
+        expect(run.reachedMagicCheck).toBe(false);
         expect(run.reachedLoader).toBe(false);
     });
 });

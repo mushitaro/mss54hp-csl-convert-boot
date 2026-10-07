@@ -78,16 +78,14 @@ describe('what each tier is allowed to do on this build', () => {
         expect(tierEnabled('irreversible')).toBe(false);
     });
 
-    it('has the reversible tier open, which is the point of the split', () => {
-        expect(FAST_ENTRY_WRITE_ENABLED).toBe(true);
-        expect(tierEnabled('reversible')).toBe(true);
+    it('locks FAST ENTRY because the backup cannot recover censored bytes', () => {
+        expect(FAST_ENTRY_WRITE_ENABLED).toBe(false);
+        expect(tierEnabled('reversible')).toBe(false);
     });
 
-    it.each(PROCESSORS)('builds fast-entry telegrams for the %s', (processor) => {
-        const erase = buildFastEntryEraseTelegram(processor);
-        expect(erase[0]).toBe(0x07);
-        const write = buildFastEntryWriteTelegram(processor, FREE_IDENTIFIERS.start, new Uint8Array([1, 2]));
-        expect(write.length).toBe(7);
+    it.each(PROCESSORS)('refuses hardware fast-entry telegrams for the %s', (processor) => {
+        expect(() => buildFastEntryEraseTelegram(processor)).toThrow(WriteLockedError);
+        expect(() => buildFastEntryWriteTelegram(processor, FREE_IDENTIFIERS.start, new Uint8Array([1, 2]))).toThrow(WriteLockedError);
     });
 
     it('still refuses to build a probe sector', () => {
@@ -122,6 +120,6 @@ describe('what each tier is allowed to do on this build', () => {
         // The direction that matters: a call site nobody updated stays at the strictest tier, so
         // widening is something a person has to write down rather than something they can forget.
         expect(() => assertWriteUnlocked('something new')).toThrow(WriteLockedError);
-        expect(() => assertWriteUnlocked('something new', 'reversible')).not.toThrow();
+        expect(() => assertWriteUnlocked('something new', 'reversible')).toThrow(WriteLockedError);
     });
 });

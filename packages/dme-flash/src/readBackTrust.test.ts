@@ -47,7 +47,7 @@ function targetImage(): Uint8Array {
  * carries a correct checksum and the link has no reason to retry. A corrupted frame would be caught
  * by the DS2 layer and is a different failure entirely.
  */
-function flakyTransport(image: Uint8Array, flipAfterReads: number, flipAt: number): ByteTransport {
+function flakyTransport(image: Uint8Array, flipAfterReads: number, flipAt: number, countRead = () => true): ByteTransport {
     const dme = new PracticeDme(image);
     let buffer: number[] = [];
     let reads = 0;
@@ -60,7 +60,7 @@ function flakyTransport(image: Uint8Array, flipAfterReads: number, flipAt: numbe
             const parsed = parseDs2Frame(bytes);
             if (!parsed.ok || !parsed.data) return;
             // 0x06 is the read command; count only those, so writes do not move the trigger.
-            if (parsed.data[0] === 0x06 && ++reads === flipAfterReads && !flipped) {
+            if (parsed.data[0] === 0x06 && countRead() && ++reads === flipAfterReads && !flipped) {
                 flipped = true;
                 image[flipAt] = (image[flipAt]! ^ 0xff) & 0xff;
             }
@@ -94,8 +94,14 @@ describe('a read-back that contradicts itself', () => {
         const window = IMAGE_WINDOWS.find((w) => w.kind === 'program' && w.processor === 'slave')!;
         const flipAt = window.imageOffset + 0x100;
 
-        const transport = flakyTransport(ecu, chunksPerPass + 1, flipAt);
+        let finalReadBack = false;
+        const transport = flakyTransport(ecu, chunksPerPass + 1, flipAt, () => finalReadBack);
         const session = new Ds2Session(transport, { delay: async () => {} });
+        const backup = session.fullBackup.bind(session);
+        vi.spyOn(session, 'fullBackup').mockImplementation(async (...args) => {
+            finalReadBack = true; // exclude live AIF preflight and intermediate program reads
+            return backup(...args);
+        });
 
         const outcome = await withSimulatedEcu(async () => {
             const plan = planFlash({ image, windowKinds: ['program', 'calibration'] });

@@ -13,10 +13,9 @@
  * would make a practice capture indistinguishable from a real one. This image is mostly 0xFF with
  * only the fields the flow actually reads filled in.
  *
- * What is real is everything except the bytes. The DS2 framing, the K-line echo, the seed/key
- * login, the nibble map, the censored window, the two-pass comparison and every refusal are the
- * production paths running against `MockDme`. Practice cannot teach a flow that does not exist,
- * because there is only one flow.
+ * The host runs its production framing, login, address mapping and read-back paths. ECU responses,
+ * counter updates and loader effects are simulated; this is not firmware or hardware execution.
+ * residentWorkflow.test.ts separately executes actual firmware and flash routines in the CPU model.
  */
 import { MockDme } from './mockDme';
 import { Command } from './telegrams';
@@ -26,10 +25,11 @@ import { FULL_IMAGE_LENGTH, type Processor } from './imageLayout';
 import { SA0_LENGTH, SA0_IMAGE_OFFSET, correctBootloaderCrc } from './bootloaderImage';
 import { FREE_IDENTIFIERS, ServiceBlock } from './fastEntry';
 import {
-    MAGIC_OFFSET, BOOTLOADER_IMAGE_OFFSET, STAGED_MAGIC, carriesNoBootloaderImage,
+    MAGIC_OFFSET, BOOTLOADER_IMAGE_OFFSET, STAGED_MAGIC, carriesNoBootloaderImage, stagedImageCrcValid,
     STAGED_SECTOR_LENGTH,
 } from './blLoader';
 import type { ByteTransport } from './transport';
+import { inspectProgrammingCounter } from './programmingState';
 
 /**
  * How the practice run is paced, and why it is paced at all.
@@ -94,7 +94,7 @@ export function practiceSa0(processor: Processor): Uint8Array {
  */
 export function practiceServiceBlock(seed: number): Uint8Array {
     const block = new Uint8Array(FREE_IDENTIFIERS.length).fill(0xff);
-    block.set([0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00], ServiceBlock.counterOffset);
+    block.fill(0, ServiceBlock.counterOffset, ServiceBlock.counterOffset + 8);
     for (let i = 0; i < 0x28; i++) block[ServiceBlock.identityOffset + i] = (seed + i * 37) & 0xff;
     return block;
 }
@@ -186,6 +186,21 @@ export function realSecondsFor(exchanges: number): number {
  */
 export class PracticeDme {
     private readonly mock: MockDme;
+    private programmingKind: 'program' | 'calibration' | null = null;
+    private calibrationContainsLoader = false;
+    private recordMode(kind: 'program' | 'calibration' | null, bases: number[] = [0, 0x80000]): void {
+        const marker = kind === 'program' ? 0xff00 : kind === 'calibration' ? 0x00ff : 0;
+        for (const base of bases) {
+            let at = base + 0x4800;
+            while (at < base + 0x4880 && (this.image[at] !== 255 || this.image[at + 1] !== 255)) at += 2;
+            const previous = (this.image[at - 2]! << 8) | this.image[at - 1]!;
+            if (at > base + 0x4800 && previous === marker) continue;
+            if (at >= base + 0x4878) throw new Error('practice AIF counter is full');
+            if (at > base + 0x4800) this.image.fill(0, at - 2, at);
+            this.image[at] = marker >>> 8; this.image[at + 1] = marker & 255;
+        }
+        this.programmingKind = kind;
+    }
     /** DS2 window base -> the flash array and offset it addresses. */
     constructor(private readonly image: Uint8Array) {
         this.mock = new MockDme({
@@ -228,6 +243,12 @@ export class PracticeDme {
         const address = ((request[2] ?? 0) << 16) | ((request[3] ?? 0) << 8) | (request[4] ?? 0);
 
         if (segment === Segment.Recycling || segment === Segment.Finish) {
+            if (segment === Segment.Finish && this.programmingKind === 'program' && this.calibrationContainsLoader) {
+                this.recordMode(null);
+                this.recordMode('calibration', [0]);
+                return new Uint8Array([Ds2Status.Ack, Segment.Finish, 0, 0, 0, 0, 15]);
+            }
+            if (segment === Segment.Finish) this.recordMode(null);
             return new Uint8Array([Ds2Status.Ack]);
         }
 
@@ -235,13 +256,29 @@ export class PracticeDme {
             const at = this.locate(address);
             if (!at || !at.erasable) return new Uint8Array([Ds2Status.Rejected]);
             const length = eraseLengthFor(address);
-            this.image.fill(0xff, at.offset, at.offset + length);
+            const kind = (address >>> 20) & 7;
+            if (kind === 2 || kind === 5) {
+                const next = kind === 2 ? 'calibration' : 'program';
+                if (this.programmingKind !== null && this.programmingKind !== next) {
+                    return new Uint8Array([Ds2Status.Ack, Segment.Erase,
+                        address >>> 16, address >>> 8 & 255, address & 255, 0,
+                        this.programmingKind === 'program' ? 7 : 8]);
+                }
+                this.recordMode(next);
+                if (kind === 2) this.calibrationContainsLoader = false;
+                const start = kind === 2 ? 0x8000 : 0x10000;
+                for (const base of [0, 0x80000]) this.image.fill(0xff, base + start, base + start + length);
+            } else {
+                const start = at.offset - (address & 0xfffff);
+                this.image.fill(0xff, start, start + length);
+            }
             return new Uint8Array([Ds2Status.Ack]);
         }
 
         if (segment === Segment.Write) {
             const at = this.locate(address);
-            const data = request.subarray(5);
+            const data = request.subarray(6);
+            if (request[5] !== data.length || data.length === 0) return new Uint8Array([Ds2Status.ParameterError]);
             if (!at) return new Uint8Array([Ds2Status.Rejected]);
             for (let i = 0; i < data.length; i++) {
                 // AND, not assignment. NOR programming only clears bits.
@@ -289,6 +326,9 @@ export class PracticeDme {
      * Returns which processors ran their loader, so a caller can report it.
      */
     powerCycle(): Processor[] {
+        // Reset does not finish a programming session. The real firmware restores
+        // it from the persistent AIF marker (2E0C); staged loaders do not clear it.
+        this.mock.unlocked = false;
         const ran: Processor[] = [];
         for (const processor of ['master', 'slave'] as const) {
             const base = processor === 'master' ? 0 : 0x80000;
@@ -297,17 +337,26 @@ export class PracticeDme {
             const magic = (((this.image[magicAt] ?? 0) << 24) | ((this.image[magicAt + 1] ?? 0) << 16)
                 | ((this.image[magicAt + 2] ?? 0) << 8) | (this.image[magicAt + 3] ?? 0)) >>> 0;
             if (magic !== STAGED_MAGIC) continue;
+            this.calibrationContainsLoader = true;
 
-            // Disarm first. Everything after this can fail and the ECU still boots.
+            // Disarm first. A CRC refusal before the SA0 erase retains the original bootloader.
             this.image.fill(0x00, magicAt, magicAt + 4);
 
             const probe = carriesNoBootloaderImage(
                 this.image.subarray(sector, sector + STAGED_SECTOR_LENGTH));
             if (!probe) {
+                if (!stagedImageCrcValid(this.image.subarray(sector, sector + STAGED_SECTOR_LENGTH))) continue;
+                if (processor === 'master') {
+                    try {
+                        const counter = inspectProgrammingCounter(this.image.subarray(0x4800, 0x4880));
+                        if (counter.mode !== 'calibration' || counter.used > 55) continue;
+                    } catch { continue; }
+                }
                 const staged = this.image.subarray(
                     sector + BOOTLOADER_IMAGE_OFFSET, sector + BOOTLOADER_IMAGE_OFFSET + SA0_LENGTH);
                 // SA0 is the one sector DS2 cannot erase; the loader running on the CPU can.
                 this.image.set(staged, base);
+                if (processor === 'master') this.recordMode('program', [0]);
             }
             ran.push(processor);
         }

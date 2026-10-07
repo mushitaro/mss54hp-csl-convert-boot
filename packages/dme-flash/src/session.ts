@@ -13,12 +13,12 @@
  *
  * Two independent passes, compared byte for byte, is the difference between a file and a backup.
  */
-import { Ds2Link, TIMEOUTS, type ByteTransport, type Ds2LinkOptions } from './transport';
+import { Ds2Link, Ds2LinkError, TIMEOUTS, WRITE_RETRY_ATTEMPTS, type ByteTransport, type Ds2LinkOptions } from './transport';
 import { Ds2Status, statusOf, describeDs2Status, type Ds2Response } from './ds2';
 import {
     buildReadTelegram, buildEncodingChecksumTelegram, decodeEncodingChecksum,
     buildRecyclingTelegram, buildFinishTelegram, buildBaudRateTelegram, parseWriteAcknowledgement,
-    buildEraseTelegram, buildWriteTelegram,
+    buildEraseTelegram, buildWriteTelegram, describeWriteVerify,
     type EncodingChecksumReport,
 } from './telegrams';
 import {
@@ -39,7 +39,8 @@ import {
     buildFastEntryEraseTelegram, buildFastEntryWriteTelegram,
     type Span, type VerifiedBackup,
 } from './fastEntry';
-import { assertWriteUnlocked } from './writeLock';
+import { assertWriteUnlocked, FAST_ENTRY_WRITE_ENABLED } from './writeLock';
+import { requireProgrammingCounter } from './programmingState';
 
 export class SessionError extends Error {
     constructor(message: string) {
@@ -231,6 +232,17 @@ export class Ds2Session {
         await this.login();
     }
 
+    /** Power loss resets both the DME's baud rate and seed/key access. Old session state is stale. */
+    async resumeAfterPowerCycle(): Promise<string> {
+        await this.transport.setBaudRate?.(9600);
+        if (this.transport.hasReadError?.()) await this.transport.recoverRead?.();
+        await this.transport.drain?.();
+        const ident = await this.ident();
+        if (!ident) throw new SessionError('post-cycle IDENT was empty; completion is not confirmed');
+        await this.login();
+        return ident;
+    }
+
     /** Execute one linear-read plan. */
     async runPlan(plan: RawReadPlan, onChunk?: (bytesRead: number) => void): Promise<Uint8Array> {
         const bytes = new Uint8Array(plan.totalBytes).fill(0xff);
@@ -369,6 +381,10 @@ export class Ds2Session {
      * job is to read, and reading slowly beats not reading.
      */
     async enterFastRead(backup: VerifiedBackup | null, onEvent?: (line: string) => void): Promise<boolean> {
+        if (!FAST_ENTRY_WRITE_ENABLED && !this.transport.simulated) {
+            onEvent?.('FAST ENTRY disabled: censored service bytes cannot be restored; continuing at 9600');
+            return false;
+        }
         // Before the first byte, not before the erase. A guard that runs later runs too late.
         assertWriteUnlocked(
             'fast entry (erases and restores the Free Identifiers sector)', 'reversible');
@@ -378,23 +394,38 @@ export class Ds2Session {
         const plan = buildPreservationPlan(backup);
         if (!plan.safe) { say(`FAST ENTRY skipped: ${plan.reason}`); return false; }
 
-        for (const processor of ['master', 'slave'] as const) {
-            const live = await this.readServiceBlock(processor);
-            const match = serviceBlockMatches(backup!, live, processor);
-            if (!match.same) { say(`FAST ENTRY skipped: ${match.reason}`); return false; }
-        }
-        say(`FAST ENTRY plan: ${plan.spans.length} span(s), ${planBytes(plan.spans)} byte(s)`);
-
-        // Live, every time. The backup contributed addresses; these are the bytes that go back.
+        // Capture and confirm the entire live block, including the counter excluded from the
+        // same-ECU check. Use these exact bytes for restoration; a subsequent unchecked reread
+        // could otherwise replace the boot-handoff vector with a corrupted transport result.
         const live: { span: Span; data: Uint8Array }[] = [];
+        const prepMarkers = new Map<Processor, Uint8Array>();
         try {
-            for (const span of plan.spans) {
-                live.push({ span, data: await this.readRange(span) });
+            for (const processor of ['master', 'slave'] as const) {
+                const first = (await this.readServiceBlock(processor)).slice();
+                const second = await this.readServiceBlock(processor);
+                if (!sameBytes(first, second)) {
+                    say(`FAST ENTRY skipped: the two live ${processor} service-block reads disagree`);
+                    return false;
+                }
+                const match = serviceBlockMatches(backup!, first, processor);
+                if (!match.same) { say(`FAST ENTRY skipped: ${match.reason}`); return false; }
+                const marker = first.slice(ServiceBlock.prepMarkerOffset,
+                    ServiceBlock.prepMarkerOffset + FAST_ENTRY_PREP_MARKER.length);
+                if (!marker.every(b => b === 0xff) && !sameBytes(marker, FAST_ENTRY_PREP_MARKER)) {
+                    say(`FAST ENTRY skipped: ${processor} has an unrecognised preparation marker`);
+                    return false;
+                }
+                prepMarkers.set(processor, marker);
+                for (const span of plan.spans.filter(s => s.processor === processor)) {
+                    const offset = span.start - FREE_IDENTIFIERS.start;
+                    live.push({ span, data: first.slice(offset, offset + span.length) });
+                }
             }
         } catch (error) {
             say(`FAST ENTRY skipped: could not read the spans to preserve (${describe(error)})`);
             return false;
         }
+        say(`FAST ENTRY plan: ${plan.spans.length} span(s), ${planBytes(plan.spans)} byte(s), confirmed live twice`);
 
         // --- Phase 2: destructive ---------------------------------------------------------------
         let eraseStarted = false;
@@ -410,8 +441,7 @@ export class Ds2Session {
             // cell is exactly what the write acknowledgement's verify byte rejects.
             for (const processor of ['master', 'slave'] as const) {
                 const at = FREE_IDENTIFIERS.start + ServiceBlock.prepMarkerOffset;
-                const present = await this.readChunk(
-                    0x00, toDs2Address(processor, at), FAST_ENTRY_PREP_MARKER.length);
+                const present = prepMarkers.get(processor)!;
                 if (present.every((b) => b === 0xff)) {
                     await this.writeServiceBlock(processor, at, FAST_ENTRY_PREP_MARKER);
                     say(`FAST ENTRY ${processor} prep marker written`);
@@ -605,31 +635,29 @@ export class Ds2Session {
         }
     }
 
-    /**
-     * One write telegram into a service block, validated by its acknowledgement.
-     *
-     * Not retried, and that is deliberate: a write that round-tripped and was refused means the
-     * device tried and could not, and re-sending it papers over failing flash. Only a transport
-     * failure would be idempotent, and this layer cannot tell the two apart - so it does neither.
-     */
+    /** Restore one service chunk using the same read-before-replay rule as ordinary writes. */
     private async writeServiceBlock(processor: Processor, imageAddress: number, bytes: Uint8Array): Promise<void> {
         const telegram = buildFastEntryWriteTelegram(processor, imageAddress, bytes);
-        // Retried for the same reason as writeChunk, and with more at stake: this is the restore of
-        // the Free Identifiers sector during fast entry, so it always runs with that sector erased.
-        // A telegram lost here loses the VIN and the flash counter, and it is the one sector no
-        // distributable image can put back.
-        const response = await this.link.transceiveWrite(telegram, TIMEOUTS.write);
-        const ack = parseWriteAcknowledgement(
-            response, toDs2Address(processor, imageAddress), bytes.length);
-        if (!ack.ok) {
-            throw new SessionError(
-                `write to ${processor} 0x${imageAddress.toString(16)} was not acknowledged: ${ack.reason}`);
-        }
+        await this.writeConfirmed(telegram, toDs2Address(processor, imageAddress), bytes);
     }
 
-    /** One programming-control telegram, checked for an ACK. */
-    private async control(telegram: Uint8Array, timeoutMs: number, what: string): Promise<void> {
-        requireAck(await this.link.transceive(telegram, timeoutMs), what);
+    /** One control exchange. An outer ACK does not override an inner programming failure. */
+    private async control(telegram: Uint8Array, timeoutMs: number, what: string, allowDataIncomplete = false): Promise<void> {
+        const response = requireAck(await this.link.transceive(telegram, timeoutMs), what);
+        const data = response.data!;
+        // TUNER accepts a bare positive response. If details are present, they must be
+        // complete and belong to this segment; never discard a reported verify failure.
+        if (data.length === 1) return;
+        if (data.length < 7) throw new SessionError(`${what}: truncated programming-control response`);
+        if (data[1] !== telegram[1]) throw new SessionError(`${what}: wrong programming-control segment`);
+        if (data[5] !== 0 || [2, 3, 4].some(i => data[i] !== telegram[i])) {
+            throw new SessionError(`${what}: wrong programming-control address/count`);
+        }
+        // Recycle controls are advisory in the reference flow. Erase and Finish are not.
+        const pendingCalibration = allowDataIncomplete && telegram[1] === 0x0f && data[6] === 15;
+        if (telegram[1] !== 0x0e && data[6] !== 1 && !pendingCalibration) {
+            throw new SessionError(`${what}: verify byte ${data[6]}: ${describeWriteVerify(data[6]!)}`);
+        }
     }
 
     // ---------------------------------------------------------------------------------------
@@ -647,26 +675,62 @@ export class Ds2Session {
             `erase at 0x${ds2Address.toString(16)}`);
     }
 
-    /**
-     * Program one chunk, validated by its acknowledgement.
-     *
-     * The TELEGRAM is retried; the ACKNOWLEDGEMENT never is, and the line between them is the whole
-     * design. `transceiveWrite` retries only a transport failure - a timeout, a break - which means
-     * the telegram never landed and re-sending the same bytes to the same address is idempotent.
-     * The check below runs on a telegram that round-tripped: a refusal there means the DME received
-     * it, tried, and could not, and re-sending that would paper over failing flash and then report
-     * success.
-     *
-     * This split is what the reference implementation does, and the reason the retry half of it is
-     * not optional: this call runs AFTER an erase. Without it, one lost telegram failed the entire
-     * flash on an ECU whose program window was already gone.
-     */
+    /** Same finalize telegram used by TUNER. Never substitute a software reset for key OFF/ON. */
+    async finishProgramming(allowDataIncomplete = false): Promise<void> {
+        // Only a complete program+calibration plan may use this intermediate
+        // transition. The executor verifies both program windows immediately.
+        await this.control(buildFinishTelegram(0), TIMEOUTS.write, 'finish programming', allowDataIncomplete);
+    }
+
+    /** Read both live AIF counters twice before starting a destructive sequence. */
+    async preflightProgramming(kind: 'program' | 'calibration', requireActive = false): Promise<void> {
+        for (const address of [0x000800, 0x800800]) {
+            const first = (await this.readWindow(address, 128)).slice();
+            const second = await this.readWindow(address, 128);
+            if (!sameBytes(first, second)) throw new SessionError('programming counter reads disagree; nothing erased');
+            try {
+                // The master's dispatcher enforces mode; the slave erase branch
+                // sets the requested mode independently (resident 2590..25EE).
+                const state = requireProgrammingCounter(first, kind, address === 0x800);
+                if (requireActive && address === 0x800 && state.mode !== kind) {
+                    throw new Error(`master loader did not persist ${kind} mode`);
+                }
+            }
+            catch (error) { throw new SessionError(`${address === 0x800 ? 'master' : 'slave'}: ${String(error)}`); }
+        }
+    }
+
+    /** Program one chunk; on a lost response, read twice before deciding whether replay is safe. */
     async writeChunk(ds2Address: number, bytes: Uint8Array): Promise<void> {
-        const response = await this.link.transceiveWrite(buildWriteTelegram(ds2Address, bytes), TIMEOUTS.write);
-        const ack = parseWriteAcknowledgement(response, ds2Address, bytes.length);
-        if (!ack.ok) {
-            throw new SessionError(
-                `write of ${bytes.length} B to 0x${ds2Address.toString(16)} was not acknowledged: ${ack.reason}`);
+        await this.writeConfirmed(buildWriteTelegram(ds2Address, bytes), ds2Address, bytes);
+    }
+
+    /** No blind NOR replay: two matching reads must prove either success or an erased target. */
+    private async writeConfirmed(telegram: Uint8Array, address: number, intended: Uint8Array): Promise<void> {
+        telegram = telegram.slice();
+        intended = intended.slice();
+        for (let attempt = 1; attempt <= WRITE_RETRY_ATTEMPTS; attempt++) {
+            let response: Ds2Response;
+            try {
+                response = await this.link.transceiveWrite(telegram, TIMEOUTS.write);
+            } catch (error) {
+                if (error instanceof Ds2LinkError
+                    && (error.kind === 'refused-by-write-lock' || error.kind === 'concurrent-exchange')) throw error;
+                if (address < 0x18) throw new SessionError('WRITE outcome uncertain in censored service bytes; no replay sent');
+                await this.link.recoverAfterWriteFault(attempt);
+                const first = await this.readWindow(address, intended.length);
+                const second = await this.readWindow(address, intended.length);
+                if (!sameBytes(first, second)) throw new SessionError('WRITE outcome uncertain: recovery reads disagree; no replay sent');
+                if (sameBytes(first, intended)) return;
+                if (!first.every(b => b === 0xff)) {
+                    throw new SessionError('WRITE outcome uncertain: target is partially programmed or differs; no replay sent');
+                }
+                if (attempt === WRITE_RETRY_ATTEMPTS) throw error;
+                continue; // Only a twice-confirmed erased target can receive the identical WRITE again.
+            }
+            const ack = parseWriteAcknowledgement(response, address, intended.length);
+            if (!ack.ok) throw new SessionError(`write to 0x${address.toString(16)} was not acknowledged: ${ack.reason}`);
+            return;
         }
     }
 

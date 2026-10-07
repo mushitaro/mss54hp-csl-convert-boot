@@ -21,10 +21,13 @@ import {
     Segment, resolveFlashAddress, WRITE_CHUNK_MAX, RESPONSE_ADDRESS_REJECTED,
 } from './regionMap';
 import {
-    IMAGE_WINDOWS, isProtectedImageOffset, ds2ToImageOffset, type ImageWindow, type WindowKind,
+    IMAGE_WINDOWS, FULL_IMAGE_LENGTH, isProtectedImageOffset, ds2ToImageOffset, type ImageWindow, type WindowKind,
 } from './imageLayout';
+import { sectorIsArmed } from './blLoader';
 
-export type StepKind = 'login' | 'erase' | 'write' | 'reset' | 'verify-checksum';
+export type StepKind = 'login' | 'erase' | 'write' | 'finish' | 'reset' | 'verify-checksum';
+
+export const ERASE_SESSION_ADDRESS = { program: 0xd00000, calibration: 0xa02000 } as const;
 
 export interface FlashStep {
     readonly kind: StepKind;
@@ -55,17 +58,22 @@ export interface FlashSource {
 /**
  * Build the write plan for a set of windows.
  *
- * Erase is per window-kind-per-processor and precedes that window's writes, mirroring the proven
- * sequence: one erase control to the window's programming-session address, then chunked writes.
- * The reference erases the calibration with a single control at 0xA02000 that clears both the
- * master and slave calibration; program windows are treated the same way, one erase each.
+ * One erase per kind affects both processors. Complete and Finish that pair before starting
+ * another kind: the resident firmware distinguishes program (0x66) and data (0x3C) sessions.
+ * Calibration uses TUNER's 0xA02000 entry. Program execution remains hardware-locked.
  */
 export function planFlash(source: FlashSource, chunkSize = WRITE_CHUNK_MAX): FlashPlan {
+    if (source.image.length !== FULL_IMAGE_LENGTH) throw new Error('flash source must be a full 1 MiB image');
     if (chunkSize <= 0 || chunkSize > WRITE_CHUNK_MAX || chunkSize % 2 !== 0) {
         throw new Error(`write chunk size ${chunkSize} must be positive, even, and <= ${WRITE_CHUNK_MAX}`);
     }
     const windows = IMAGE_WINDOWS.filter((w) => source.windowKinds.includes(w.kind));
     if (windows.length === 0) throw new Error('no windows selected to flash');
+    for (const w of windows) {
+        if (w.kind === 'calibration' && sectorIsArmed(source.image.subarray(w.imageOffset, w.imageOffset + w.length))) {
+            throw new Error('ordinary calibration writes must never contain staged-loader magic');
+        }
+    }
 
     const steps: FlashStep[] = [
         { kind: 'login', note: 'Seed/key unlock at access level 5; refreshed immediately before the erase.' },
@@ -73,31 +81,28 @@ export function planFlash(source: FlashSource, chunkSize = WRITE_CHUNK_MAX): Fla
     let writeBytes = 0;
     let eraseCount = 0;
 
-    for (const window of windows) {
-        steps.push({
-            kind: 'erase',
-            segment: Segment.Erase,
-            ds2Address: window.ds2Address,
-            note: `Erase ${window.kind} window (${window.processor}) before programming.`,
-        });
+    for (const kind of ['program', 'calibration'] as const) {
+        const pair = windows.filter(w => w.kind === kind).sort((a, b) => b.ds2Address - a.ds2Address);
+        if (pair.length === 0) continue;
+        steps.push({ kind: 'erase', segment: Segment.Erase, ds2Address: ERASE_SESSION_ADDRESS[kind],
+            note: `Erase both ${kind} windows in one programming session.` });
         eraseCount++;
-        for (let done = 0; done < window.length; done += chunkSize) {
-            const count = Math.min(chunkSize, window.length - done);
-            const ds2Address = window.ds2Address + done;
-            const imageOffset = window.imageOffset + done;
-            steps.push({
-                kind: 'write',
-                segment: Segment.Write,
-                ds2Address,
-                imageOffset,
-                data: source.image.subarray(imageOffset, imageOffset + count),
-                note: `Write ${count} B to ${window.kind}/${window.processor}.`,
-            });
-            writeBytes += count;
+        for (const window of pair) {
+            for (let done = 0; done < window.length; done += chunkSize) {
+                const count = Math.min(chunkSize, window.length - done);
+                const ds2Address = window.ds2Address + done;
+                const imageOffset = window.imageOffset + done;
+                steps.push({ kind: 'write', segment: Segment.Write, ds2Address, imageOffset,
+                    data: source.image.slice(imageOffset, imageOffset + count),
+                    note: `Write ${count} B to ${window.kind}/${window.processor}.` });
+                writeBytes += count;
+            }
         }
+        steps.push({ kind: 'finish', segment: Segment.Finish, ds2Address: 0,
+            note: `Finish the ${kind} session before changing the programming mode.` });
     }
     steps.push({ kind: 'verify-checksum', note: 'Confirm calibration CRC-16/ARC on the DME matches the image.' });
-    steps.push({ kind: 'reset', note: 'Reset the ECU and re-read IDENT to confirm 0401.' });
+    steps.push({ kind: 'reset', note: 'After verification: key OFF, wait 10 seconds, key ON, then reconnect at 9600 and re-read IDENT.' });
 
     return { steps, windows, writeBytes, eraseCount };
 }
@@ -121,24 +126,76 @@ export interface Violation {
  */
 export function validateSequence(plan: FlashPlan): Violation[] {
     const violations: Violation[] = [];
+    const add = (reason: string): void => { violations.push({ stepIndex: -1, reason }); };
+    if (plan.windows.length === 0) add('no windows selected');
+    const bases = new Set<number>();
+    for (const w of plan.windows) {
+        const canonical = IMAGE_WINDOWS.find(c => c.ds2Address === w.ds2Address);
+        if (!canonical || canonical.kind !== w.kind || canonical.processor !== w.processor
+            || canonical.length !== w.length || canonical.imageOffset !== w.imageOffset
+            || bases.has(w.ds2Address)) add('window definitions must be unique canonical image windows');
+        bases.add(w.ds2Address);
+    }
+    // Both CPU windows are required when a kind is erased; a peer-wide erase must not strand it.
+    for (const kind of ['program', 'calibration'] as const) {
+        const count = plan.windows.filter(w => w.kind === kind).length;
+        if (count !== 0 && count !== 2) add(`both ${kind} processor windows are required`);
+    }
+    const kinds = plan.steps.map(s => s.kind);
+    if (kinds[0] !== 'login' || kinds.at(-2) !== 'verify-checksum' || kinds.at(-1) !== 'reset'
+        || kinds.slice(1, -2).some(k => k !== 'erase' && k !== 'write' && k !== 'finish')) add('invalid flash phase order');
+    const selectedKinds = new Set(plan.windows.map(w => w.kind));
+    if (plan.eraseCount !== kinds.filter(k => k === 'erase').length
+        || plan.eraseCount !== selectedKinds.size) add('erase count must match selected kinds exactly');
+    if (kinds.filter(k => k === 'finish').length !== selectedKinds.size) add('each programming session needs Finish');
+    if (plan.writeBytes !== plan.steps.reduce((n, s) => n + (s.kind === 'write' ? s.data?.length ?? 0 : 0), 0)) {
+        add('write byte count does not match the steps');
+    }
+    let activeKind: WindowKind | null = null;
+    const erasedKinds = new Set<WindowKind>();
     const erasedWindows = new Set<number>();
     const writtenByWindow = new Map<number, number>(); // ds2 base -> bytes written so far
 
     plan.steps.forEach((step, i) => {
+        if (step.kind === 'erase' || step.kind === 'write') {
+            if (!Number.isSafeInteger(step.ds2Address)) {
+                violations.push({ stepIndex: i, reason: 'flash address must be an integer' });
+                return;
+            }
+            if (step.segment !== (step.kind === 'erase' ? Segment.Erase : Segment.Write)) {
+                violations.push({ stepIndex: i, reason: 'segment does not match step kind' });
+            }
+        }
         if (step.kind === 'erase') {
             const w = windowAt(plan, step.ds2Address!);
             if (!w) { violations.push({ stepIndex: i, reason: `erase address 0x${step.ds2Address!.toString(16)} is in no known window` }); return; }
+            if (step.ds2Address !== ERASE_SESSION_ADDRESS[w.kind] || erasedKinds.has(w.kind) || activeKind !== null) {
+                violations.push({ stepIndex: i, reason: 'erase each kind once; Finish both CPU writes before changing mode' });
+            }
+            activeKind = w.kind;
+            erasedKinds.add(w.kind);
             if (isProtectedImageOffset(w.imageOffset)) {
                 violations.push({ stepIndex: i, reason: `erase would clear a protected window at image 0x${w.imageOffset.toString(16)}` });
             }
             const r = resolveFlashAddress(Segment.Erase, step.ds2Address!);
             if (!r.accepted) violations.push({ stepIndex: i, reason: `erase address refused by firmware: ${r.reason}` });
-            erasedWindows.add(w.ds2Address);
-            writtenByWindow.set(w.ds2Address, 0);
+            for (const peer of plan.windows.filter(peer => peer.kind === w.kind)) {
+                erasedWindows.add(peer.ds2Address);
+                writtenByWindow.set(peer.ds2Address, 0);
+            }
+        } else if (step.kind === 'finish') {
+            if (activeKind === null || step.segment !== Segment.Finish || step.ds2Address !== 0
+                || step.data !== undefined || plan.windows.filter(w => w.kind === activeKind)
+                    .some(w => writtenByWindow.get(w.ds2Address) !== w.length)) {
+                violations.push({ stepIndex: i, reason: 'Finish requires complete writes to both CPU windows of the active kind' });
+            }
+            activeKind = null;
         } else if (step.kind === 'write') {
             const w = windowAt(plan, step.ds2Address!);
             if (!w) { violations.push({ stepIndex: i, reason: `write address 0x${step.ds2Address!.toString(16)} is in no known window` }); return; }
+            if (w.kind !== activeKind) violations.push({ stepIndex: i, reason: 'write outside its active programming session' });
             const off = ds2ToImageOffset(step.ds2Address!);
+            if (step.imageOffset !== off) violations.push({ stepIndex: i, reason: 'source image offset does not match DS2 address' });
             if (off === undefined || isProtectedImageOffset(off)) {
                 violations.push({ stepIndex: i, reason: `write into a protected or unmapped region at 0x${step.ds2Address!.toString(16)}` });
             }
@@ -165,11 +222,23 @@ export function validateSequence(plan: FlashPlan): Violation[] {
         }
     });
 
+    if (activeKind !== null) add('programming session left open');
+
     // Every selected window must be fully covered.
     for (const w of plan.windows) {
         const written = writtenByWindow.get(w.ds2Address) ?? 0;
         if (written !== w.length) {
             violations.push({ stepIndex: -1, reason: `${w.kind}/${w.processor} window only ${written}/${w.length} bytes covered` });
+        }
+        if (w.kind === 'calibration' && w.length === 0x8000) {
+            const sector = new Uint8Array(w.length).fill(0xff);
+            for (const s of plan.steps) {
+                const offset = (s.ds2Address ?? -1) - w.ds2Address;
+                if (s.kind === 'write' && s.data && offset >= 0 && offset + s.data.length <= sector.length) {
+                    sector.set(s.data, offset);
+                }
+            }
+            if (sectorIsArmed(sector)) add('ordinary calibration plan contains staged-loader magic');
         }
     }
     return violations;
@@ -194,7 +263,7 @@ export function describePlan(plan: FlashPlan): string {
     lines.push(`Flash plan: ${plan.eraseCount} erase, ${plan.writeBytes} bytes written across ${plan.windows.length} window(s).`);
     for (const w of plan.windows) {
         const writes = plan.steps.filter((s) => s.kind === 'write' && windowAt(plan, s.ds2Address!) === w).length;
-        lines.push(`  ${w.kind}/${w.processor} @ DS2 0x${w.ds2Address.toString(16)}: erase + ${writes} write telegram(s), ${w.length} B`);
+        lines.push(`  ${w.kind}/${w.processor} @ DS2 0x${w.ds2Address.toString(16)}: shared pair erase + ${writes} write telegram(s), ${w.length} B`);
     }
     const violations = validateSequence(plan);
     lines.push(violations.length === 0 ? '  validation: PASS' : `  validation: ${violations.length} violation(s)`);

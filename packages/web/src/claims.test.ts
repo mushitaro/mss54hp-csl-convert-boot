@@ -31,11 +31,13 @@ describe('how many bytes differ', () => {
 
         const outcome = await withSimulatedEcu(async () => {
             const plan = planProbe(buildProbeSector('slave', probe.bytes));
-            // Compare the read-back against an SA0 that is wrong everywhere, which is what a failed
-            // replacement looks like. The count must describe all of it.
-            const nothingLikeIt = new Uint8Array(SA0_LENGTH).fill(0x5a);
-            return runBlReplace(session, plan, nothingLikeIt, {
-                onPowerCycle: async () => { dme.powerCycle(); },
+            // Corrupt the actual post-cycle SA0. A mismatched intended image must now be refused
+            // before the erase, so the fault must occur after the initial live validation.
+            return runBlReplace(session, plan, practiceSa0('slave'), {
+                onPowerCycle: async () => {
+                    dme.powerCycle();
+                    image.fill(0x5a, 0x80000, 0x80000 + SA0_LENGTH);
+                },
             });
         });
 

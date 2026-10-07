@@ -22,7 +22,8 @@ import {
     type Ds2Response, type EchoMismatchAnalysis,
 } from './ds2';
 import { assertHardwareWriteUnlocked, tierForAddress, type WriteTier } from './writeLock';
-import { Command } from './telegrams';
+import { Command, writeNibbleAllowed, eraseNibbleAllowed } from './telegrams';
+import { Segment, resolveFlashAddress, WRITE_CHUNK_MAX } from './regionMap';
 
 /** Bytes in, bytes out. Implemented by Web Serial, by a mock, or by anything else. */
 export interface ByteTransport {
@@ -125,13 +126,8 @@ export const TIMEOUTS = {
 /** Read retries, matching the reference tuner's `CHUNK_RETRY_ATTEMPTS`. */
 export const READ_RETRY_ATTEMPTS = 5;
 
-/**
- * Write-telegram retries, matching the reference tuner's `WRITE_CHUNK_RETRY_ATTEMPTS`.
- *
- * Same count as the read path, and it must be: `transceiveWrite` retries only the transport
- * failure, and a lost telegram on the write path costs more than one on the read path, not less.
- */
-export const WRITE_RETRY_ATTEMPTS = 5;
+/** Maximum attempts, with two read-backs proving an erased target before each replay. */
+export const WRITE_RETRY_ATTEMPTS = 3;
 
 /** Base backoff between attempts, escalated by attempt number. */
 const RETRY_BACKOFF_MS = 300;
@@ -195,6 +191,7 @@ export class Ds2Link {
      * here; callers deal in telegram payloads and parsed responses.
      */
     async transceive(data: Uint8Array, timeoutMs: number = TIMEOUTS.response): Promise<Ds2Response> {
+        data = data.slice();
         this.guardWriteLock(data);
         if (this.exchanging) {
             // Refused rather than queued. A caller that reaches here has a sequencing bug, and
@@ -213,7 +210,7 @@ export class Ds2Link {
 
     private async exchange(data: Uint8Array, timeoutMs: number): Promise<Ds2Response> {
         const frame = buildDs2Frame(this.address, data);
-        this.onTraffic?.('tx', frame);
+        this.onTraffic?.('tx', frame.slice());
         await this.transport.write(frame);
 
         // The K-line echoes our own bytes back. Consuming them is mandatory; checking them is
@@ -259,7 +256,7 @@ export class Ds2Link {
         const full = new Uint8Array(declared);
         full.set(header, 0);
         full.set(rest, 2);
-        this.onTraffic?.('rx', full);
+        this.onTraffic?.('rx', full.slice());
 
         const parsed = parseDs2Frame(full);
         if (!parsed.ok) {
@@ -306,12 +303,17 @@ export class Ds2Link {
         timeoutMs: number = TIMEOUTS.response,
         attempts = READ_RETRY_ATTEMPTS,
     ): Promise<Ds2Response> {
+        data = data.slice();
+        if (data[0] === Command.ProgramControl || data[0] === Command.Jump) {
+            throw new Ds2LinkError('malformed', 'programming control must not use the read retry path');
+        }
         let lastError: unknown;
         for (let attempt = 1; attempt <= attempts; attempt++) {
             try {
                 return await this.transceive(data, timeoutMs);
             } catch (error) {
-                if (error instanceof Ds2LinkError && error.kind === 'refused-by-write-lock') throw error;
+                if (error instanceof Ds2LinkError
+                    && (error.kind === 'refused-by-write-lock' || error.kind === 'concurrent-exchange')) throw error;
                 lastError = error;
                 if (attempt === attempts) break;
                 // Delay FIRST, then resync. The other order clears the buffer while the DME's late
@@ -326,49 +328,23 @@ export class Ds2Link {
         throw lastError;
     }
 
-    /**
-     * Send one WRITE telegram, retrying the telegram - and only the telegram - on a link fault.
-     *
-     * Ported from the reference's `writeChunkTelegramWithRetry`, whose absence here was an
-     * asymmetry pointing the wrong way. The read path has had five attempts since it was written;
-     * the write path had none, and the write path is the one that runs **after an erase**. A single
-     * lost telegram - one break, one timeout - therefore failed an entire flash on an ECU whose
-     * program window was already gone, with nothing to catch it.
-     *
-     * **Validation deliberately stays in the caller, outside this loop.** A timeout means the
-     * telegram never landed and re-sending it is right. An acknowledgement carrying "verify failed"
-     * or "cells not erased" means the DME received it, tried, and could not; re-sending that would
-     * paper over failing flash on a twenty-year-old ECU and then report success. The reference
-     * splits it the same way and catches only the transport failure, for the same reason.
-     *
-     * Re-sending is safe because a DS2 write is one telegram: the DME either processed it or did
-     * not, and writing the same bytes to the same address twice is idempotent. The acknowledgement's
-     * next-address field, checked by the caller, catches any desync afterwards.
-     *
-     * The write lock is re-checked on every attempt, because `transceive` checks it - a retry
-     * cannot become a route around the gate.
-     */
+    /** One WRITE attempt. Only the session can reconcile an ambiguous result by reading flash. */
     async transceiveWrite(
         data: Uint8Array,
         timeoutMs: number = TIMEOUTS.write,
-        attempts = WRITE_RETRY_ATTEMPTS,
     ): Promise<Ds2Response> {
-        let lastError: unknown;
-        for (let attempt = 1; attempt <= attempts; attempt++) {
-            try {
-                return await this.transceive(data, timeoutMs);
-            } catch (error) {
-                if (error instanceof Ds2LinkError && error.kind === 'refused-by-write-lock') throw error;
-                lastError = error;
-                if (attempt === attempts) break;
-                // `resync` only touches the READ side - it drops a stale tail or restarts a stopped
-                // reader - so it sends nothing to the DME and cannot disturb the programming session
-                // this is running inside.
-                await this.delay(this.settleFor(attempt));
-                await this.resync();
-            }
+        if (data[0] !== Command.ProgramControl || data[1] !== Segment.Write) {
+            throw new Ds2LinkError('malformed', 'write retries accept only a programming WRITE telegram');
         }
-        throw lastError;
+        return this.transceive(data, timeoutMs);
+    }
+
+    /** Settle before draining a late ACK, then let the caller read the affected flash twice. */
+    async recoverAfterWriteFault(attempt: number): Promise<void> {
+        if (this.exchanging) throw new Ds2LinkError('concurrent-exchange', 'cannot resync an active exchange');
+        await this.delay(this.settleFor(attempt));
+        if (this.exchanging) throw new Ds2LinkError('concurrent-exchange', 'cannot resync an active exchange');
+        await this.resync();
     }
 
     /**
@@ -403,9 +379,30 @@ export class Ds2Link {
          * Identifiers sector, the most permissive answer there is. A gate that resolves missing
          * data in the direction of "allowed" is the wrong gate, whatever it is guarding.
          */
-        const tier: WriteTier = command === Command.Jump || data.length < 5
-            ? 'irreversible'
-            : tierForAddress((data[2]! << 16) | (data[3]! << 8) | data[4]!);
+        const address = (data[2]! << 16) | (data[3]! << 8) | data[4]!;
+        const segment = data[1];
+        const service = (address >= 0 && address < 0x2000)
+            || (address >= 0x800000 && address < 0x802000);
+        let valid = command === Command.Jump && data.length === 1;
+        if (command === Command.ProgramControl && data.length >= 6) {
+            const controlShape = data.length === 6 && data[5] === 0;
+            if (segment === Segment.Write) {
+                const length = data.length - 6;
+                const resolved = resolveFlashAddress(Segment.Write, address, length);
+                valid = data[5] === length && length > 0 && length <= WRITE_CHUNK_MAX && length % 2 === 0
+                    && address % 2 === 0 && (service || writeNibbleAllowed(address))
+                    && resolved.accepted && resolved.maxLength >= length;
+            } else if (segment === Segment.Erase) {
+                valid = controlShape && (service || eraseNibbleAllowed(address))
+                    && resolveFlashAddress(Segment.Erase, address).accepted;
+            } else if (segment === Segment.Recycling) {
+                valid = controlShape && resolveFlashAddress(Segment.Recycling, address).accepted;
+            } else if (segment === Segment.Finish) {
+                valid = controlShape && resolveFlashAddress(Segment.Finish, address).accepted;
+            }
+        }
+        const tier: WriteTier = command === Command.Jump || !valid
+            ? 'irreversible' : tierForAddress(address);
 
         try {
             assertHardwareWriteUnlocked(
@@ -415,6 +412,7 @@ export class Ds2Link {
             throw new Ds2LinkError('refused-by-write-lock',
                 error instanceof Error ? error.message : String(error));
         }
+        if (!valid) throw new Ds2LinkError('malformed', 'invalid or out-of-window programming telegram');
     }
 
     private async readOrThrow(count: number, timeoutMs: number, what: string): Promise<Uint8Array> {

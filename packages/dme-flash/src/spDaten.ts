@@ -23,10 +23,10 @@
  * to distribute and not this project's.
  */
 import { parseAustauschDatei, verifyDeclaredChecksum, type AustauschFile, type HexSection } from './paband';
-import type { ProgramSource } from './programVariant';
-import { calibrationPairFrom, CALIBRATION_PAIR_LENGTH, HALF_BASE } from './calibrationImage';
+import { assembleProgramImage, type ProgramSource } from './programVariant';
+import { calibrationPairFrom, CALIBRATION_PAIR_LENGTH, HALF_BASE, analyseChecksums } from './calibrationImage';
 import {
-    FULL_IMAGE_LENGTH, IMAGE_WINDOWS, ds2ToImageOffset, windowFor, isProtectedImageOffset,
+    IMAGE_WINDOWS, windowFor,
 } from './imageLayout';
 
 /** What a `.0DA` says about itself. Every field is BMW's own text, not this tool's. */
@@ -97,6 +97,7 @@ export function readVariant(fileName: string, bytes: Uint8Array | string): SpDat
     if (!isCslReference(reference)) {
         throw new SpDatenError(`${fileName}: calibration ${reference || '(unnamed)'} is not a CSL build`);
     }
+    requireFileChecksum(fileName, parsed);
     const pair = calibrationPairFrom(parsed);
     if (pair.length !== CALIBRATION_PAIR_LENGTH) {
         throw new SpDatenError(
@@ -116,12 +117,20 @@ export function readVariant(fileName: string, bytes: Uint8Array | string): SpDat
 /** Read one `.0PA` as the program half of a conversion. */
 export function readProgram(fileName: string, bytes: Uint8Array | string): SpDatenProgram {
     const parsed = parseAustauschDatei(bytes);
+    requireFileChecksum(fileName, parsed);
     return {
         file: fileName,
         reference: parsed.reference ?? meta(parsed, 'ZL_REFERENZ'),
         parsed,
         sections: parsed.sections,
     };
+}
+
+function requireFileChecksum(fileName: string, parsed: AustauschFile): void {
+    const check = verifyDeclaredChecksum(parsed);
+    if (check.declared === undefined || !check.valid) {
+        throw new SpDatenError(`${fileName}: missing or invalid declared checksum`);
+    }
 }
 
 export interface SpDatenSet {
@@ -189,26 +198,14 @@ export function buildConversionImage(program: ProgramSource, variant: SpDatenVar
         throw new SpDatenError(`calibration ${variant.reference} is not a CSL build`);
     }
 
-    const image = new Uint8Array(FULL_IMAGE_LENGTH).fill(0xff);
-
-    // --- program ------------------------------------------------------------------------------
-    let placed = 0;
-    for (const section of program.sections) {
-        const offset = ds2ToImageOffset(section.address);
-        if (offset === undefined) {
-            throw new SpDatenError(
-                `${program.file}: section at 0x${section.address.toString(16)} is outside every`
-                + ' window this tool writes');
-        }
-        if (isProtectedImageOffset(offset)) {
-            throw new SpDatenError(
-                `${program.file}: section at 0x${section.address.toString(16)} lands in a protected`
-                + ' sector (bootloader or service block)');
-        }
-        image.set(section.bytes, offset);
-        placed += section.bytes.length;
+    if (!/^211325000401PD(?:11|1D|1J|31|3D|3J)$/.test(variant.reference.replace(/\s/g, ''))
+        || !variant.checksumValid || variant.pair.length !== CALIBRATION_PAIR_LENGTH
+        || analyseChecksums(variant.pair).some(c => !c.valid || !c.paddingIntact)) {
+        throw new SpDatenError('calibration must be a complete, checksum-valid CSL 0401 variant');
     }
-    if (placed === 0) throw new SpDatenError(`${program.file}: carried no program data`);
+    let image: Uint8Array;
+    try { image = assembleProgramImage(program); }
+    catch (error) { throw new SpDatenError(error instanceof Error ? error.message : String(error)); }
 
     // --- calibration --------------------------------------------------------------------------
     // The pair holds slave at 0x0000 and master at 0x8000; the full image puts them 0x80000 apart.

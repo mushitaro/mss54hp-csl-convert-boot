@@ -203,18 +203,41 @@ export interface PatchedProgram extends ProgramSource {
 
 /** Lay the factory program out in a full image, so the two can be compared byte for byte. */
 function factoryImage(factory: SpDatenProgram): Uint8Array {
-    const image = new Uint8Array(FULL_IMAGE_LENGTH).fill(0xff);
-    let placed = 0;
-    for (const section of factory.parsed.sections) {
-        const offset = ds2ToImageOffset(section.address);
-        if (offset === undefined) {
-            throw new ProgramSourceError(
-                `${factory.file}: section at 0x${section.address.toString(16)} is outside every window`);
-        }
-        image.set(section.bytes, offset);
-        placed += section.bytes.length;
+    return assembleProgramImage(factory);
+}
+
+/** Assemble only complete, non-overlapping, recognised program windows. Recheck at use time:
+ * a source's typed arrays can have changed since import, and file checksums do not cover addresses. */
+export function assembleProgramImage(source: ProgramSource): Uint8Array {
+    if (source.reference.replace(/\s/g, '') !== '211325000401') {
+        throw new ProgramSourceError(`${source.file}: program is not the supported CSL 0401 build`);
     }
-    if (placed === 0) throw new ProgramSourceError(`${factory.file}: carried no program data`);
+    const image = new Uint8Array(FULL_IMAGE_LENGTH).fill(0xff);
+    const covered = new Uint8Array(FULL_IMAGE_LENGTH);
+    const windows = IMAGE_WINDOWS.filter(w => w.kind === 'program');
+    for (const section of source.sections) {
+        const window = windows.find(w => section.address >= w.ds2Address
+            && section.address + section.bytes.length <= w.ds2Address + w.length);
+        const offset = ds2ToImageOffset(section.address);
+        if (!Number.isSafeInteger(section.address) || !window || offset === undefined || !section.bytes.length) {
+            throw new ProgramSourceError(
+                `${source.file}: section at 0x${section.address.toString(16)} is outside a program window`);
+        }
+        if (covered.subarray(offset, offset + section.bytes.length).some(b => b !== 0)) {
+            throw new ProgramSourceError(`${source.file}: overlapping program sections`);
+        }
+        covered.fill(1, offset, offset + section.bytes.length);
+        image.set(section.bytes, offset);
+    }
+    const kind = isPatchedProgram(source) ? 'patched' : 'factory';
+    for (const w of windows) {
+        if (covered.subarray(w.imageOffset, w.imageOffset + w.length).includes(0)) {
+            throw new ProgramSourceError(`${source.file}: incomplete ${w.processor} program window`);
+        }
+        if (crc16Arc(image.subarray(w.imageOffset, w.imageOffset + w.length)) !== PROGRAM_WINDOW_CRC[kind][w.processor]) {
+            throw new ProgramSourceError(`${source.file}: ${w.processor} program checksum does not match the recognised ${kind} build`);
+        }
+    }
     return image;
 }
 

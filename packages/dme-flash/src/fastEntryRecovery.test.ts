@@ -97,7 +97,7 @@ describe('fast entry failing after the erase', () => {
         // Refuse the first restore chunk for longer than the retry budget, so the restore really
         // fails and the recovery is the thing that puts those bytes back.
         let refusals = 0;
-        const { transport } = faultyTransport(image, () => (refusals < 6 ? (refusals++, true) : false));
+        const { transport } = faultyTransport(image, () => (refusals < 4 ? (refusals++, true) : false));
         const session = new Ds2Session(transport, { delay: async () => {} });
 
         const events: string[] = [];

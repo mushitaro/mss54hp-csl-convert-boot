@@ -51,6 +51,7 @@ import { assertWriteUnlocked } from './writeLock';
 import { SA0_LENGTH, verifyBootloaderCrc } from './bootloaderImage';
 import { CALIBRATION_PAIR_LENGTH } from './calibrationImage';
 import type { Processor } from './imageLayout';
+import { crc16Arc } from './paband';
 
 /** One Am29F400BB 32 KiB sector: the calibration sector, and the loader's home. */
 export const STAGED_SECTOR_LENGTH = 0x8000;
@@ -60,6 +61,16 @@ export const LOADER_CODE_OFFSET = 0x0000;
 
 /** Where the replacement bootloader image sits inside the sector (CPU 0x9000). */
 export const BOOTLOADER_IMAGE_OFFSET = 0x1000;
+
+/** Full-SA0 CRC and its one's complement, after the image (CPU 0xD000). */
+export const STAGED_IMAGE_CRC_OFFSET = 0x5000;
+
+export function stagedImageCrcValid(bytes: Uint8Array): boolean {
+    const crc = crc16Arc(bytes.subarray(BOOTLOADER_IMAGE_OFFSET, BOOTLOADER_IMAGE_OFFSET + SA0_LENGTH));
+    const at = STAGED_IMAGE_CRC_OFFSET;
+    return bytes[at] === (crc >>> 8) && bytes[at + 1] === (crc & 0xff)
+        && bytes[at + 2] === ((crc >>> 8) ^ 0xff) && bytes[at + 3] === ((crc & 0xff) ^ 0xff);
+}
 
 /** Where the magic sits inside the sector (CPU 0xFFFC - the last four bytes). */
 export const MAGIC_OFFSET = 0x7ffc;
@@ -136,6 +147,9 @@ export function buildStagedSector(
     const bytes = new Uint8Array(STAGED_SECTOR_LENGTH).fill(0xff);
     bytes.set(loaderCode, LOADER_CODE_OFFSET);
     bytes.set(bootloaderImage, BOOTLOADER_IMAGE_OFFSET);
+    const fullCrc = crc16Arc(bootloaderImage);
+    bytes.set([fullCrc >>> 8, fullCrc & 0xff, (fullCrc >>> 8) ^ 0xff, (fullCrc & 0xff) ^ 0xff],
+        STAGED_IMAGE_CRC_OFFSET);
     bytes[MAGIC_OFFSET] = (STAGED_MAGIC >>> 24) & 0xff;
     bytes[MAGIC_OFFSET + 1] = (STAGED_MAGIC >>> 16) & 0xff;
     bytes[MAGIC_OFFSET + 2] = (STAGED_MAGIC >>> 8) & 0xff;

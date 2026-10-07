@@ -17,9 +17,9 @@
  * reset vector hands over SSP = 0, and BMW's bootloader calls the application's init at 0x10400
  * WITHOUT setting a stack first. So the first pushes of a real boot land at 0xFFFFFC, 0xFFFFF8,
  * 0xFFFFF4 - the top of the map, which on this part is TPU parameter RAM, so they survive and the
- * matching `rts` works. Modelled with 32-bit addresses those pushes went to 0xFFFFFFFC and were
- * lost, `rts` returned to 0, and the CPU walked the vector table and rebooted forever. That is
- * what made the real-car reset route look like a hang.
+ * stack accesses can be represented. This does not prove application init returns: the normal
+ * application route still waits for unmodelled peripherals. Calibration staging first records
+ * 00FF in AIF, whose reset route skips application init (residentWorkflow.test.ts).
  *
  * Two behaviours are modelled because a loader that ignores them fails on a real ECU:
  *
@@ -163,7 +163,11 @@ export class Machine implements Bus {
         this.sramEnabled = false;
         this.tpuramEnabled = false;
         this.watchdogEnabled = true;
+        this.watchdogArmed = false;
+        this.watchdogFired = false;
+        this.watchdogSequence = 0;
         this.instructionsSinceService = 0;
+        this.registers.clear();
         this.flash.powerCycle();
     }
 
@@ -324,10 +328,13 @@ export class Machine implements Bus {
     }
 
     private readRegister(address: number): number {
+        if ((address & ~1) === SIM.CSORBT) return this.csorbt;
+        if ((address & ~1) === SIM.CSOR0) return this.csor0;
         return this.registers.get(address & ~1) ?? 0;
     }
 
     private writeRegister(address: number, value: number, size: 1 | 2): void {
+        if (address === SIM.SYPCR && this.watchdogArmed) return;
         const aligned = size === 2 ? address : address & ~1;
         if (size === 2) this.registers.set(aligned, value);
         else {
@@ -347,6 +354,7 @@ export class Machine implements Bus {
         }
         // SYPCR is write-once; SWE is bit 7 of the low byte.
         if (address === SIM.SYPCR) {
+            this.watchdogArmed = true;
             this.watchdogEnabled = (value & 0x80) !== 0;
             return;
         }
@@ -362,7 +370,8 @@ export class Machine implements Bus {
             return;
         }
         if (aligned === SIM.TRAMBAR) {
-            this.tpuramBase = ((value & 0xfff0) | 0x00ff0000) >>> 0;
+            // UM 12.3/D.9.3: register[15:4] maps ADDR[23:12], not ADDR[15:4].
+            this.tpuramBase = ((value & 0xfff0) << 8) >>> 0;
             this.tpuramEnabled = (value & 1) === 0;
             return;
         }
@@ -377,7 +386,7 @@ export class Machine implements Bus {
     enableRamLikeFirmware(): void {
         this.sramBase = 0x00ffe000;
         this.sramEnabled = true;
-        this.tpuramBase = 0x00ffb800;
+        this.tpuramBase = 0x00ffd000;
         this.tpuramEnabled = true;
     }
 

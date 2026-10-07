@@ -68,7 +68,7 @@ describe('the staged sector layout', () => {
         const sector = buildStagedSector('master', fakeLoader(64), fakeBootloader('master'));
         expect(sector.bytes[64]).toBe(0xff);
         expect(sector.bytes[BOOTLOADER_IMAGE_OFFSET - 1]).toBe(0xff);
-        expect(sector.bytes[BOOTLOADER_IMAGE_OFFSET + SA0_LENGTH]).toBe(0xff);
+        expect(sector.bytes[BOOTLOADER_IMAGE_OFFSET + SA0_LENGTH + 4]).toBe(0xff);
     });
 
     it('is not a calibration pair: no checksum is written, only the staged bytes', () => {

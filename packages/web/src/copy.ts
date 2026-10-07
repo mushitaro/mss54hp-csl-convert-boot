@@ -52,7 +52,8 @@ const PHASE_JA: Record<ExecutorPhase, string> = {
     erase: '消去',
     write: '書き込み',
     verify: '照合',
-    reset: 'リセット',
+    finish: '書込みセッション終了',
+    reset: 'イグニッション再投入待ち',
     done: '完了',
 };
 
@@ -68,7 +69,8 @@ const PHASE_EN: Record<ExecutorPhase, string> = {
     erase: 'Erasing',
     write: 'Writing',
     verify: 'Verifying',
-    reset: 'Reset',
+    finish: 'Finishing programming',
+    reset: 'Waiting for ignition cycle',
     done: 'Done',
 };
 
@@ -179,13 +181,13 @@ const JA = {
     planStageProgram: 'CSL プログラム + パラメータ',
     doneTitle: '全工程が完了しました',
     doneBody: 'この DME は CSL のブートローダで起動し、CSL のプログラムとパラメータで動いています。',
-    doneNext: 'イグニッションを切り、30 秒おいてから入れ直してください。そのあと診断機で型番を読むと 21132500 と出ます。',
+    doneNext: 'キー OFF → 10秒 → ON 後の再IDENTと自己検査まで確認済みです。作業ログと最初のバックアップを保存してください。',
     doneKeepBackup: '最初に取ったバックアップは消さないでください。元に戻せる唯一の控えです。',
     doneRestart: 'PRACTICE をもう一度やる場合は、接続からやり直してください。',
     planStageDone: '完了',
     planStagePending: '未',
     planStageNext: '次',
-    planProgramNotDerived: 'プログラムの段は、このセッションで書いていなければ「未」と出ます。もう一度書くと同じバイトを書くだけです。',
+    planProgramNotDerived: 'プログラムの段は、このセッションで確認していなければ「未」と出ます。再接続後は読取りで状態を確認してください。「未」だけを理由に再消去・再書込みしないでください。',
     programWhichTitle: '書き込むプログラム',
     programWhichWhy: 'どの版を選ぶかとは別の質問です。パッチが持つ 2 つの整合ワードは較正では動かないので、'
         + '6 つのどのビルドとも組み合わせられます。',
@@ -282,10 +284,15 @@ const JA = {
     // the service block are never touched and never checked. The 24 censored bytes are excluded
     // because the firmware refuses to read them back at all.
     stageProgramDone: (compared: number) =>
-        `書き込んだ範囲 ${compared.toLocaleString()} バイトが実機と一致しました。`
+        `書き込んだ範囲 ${compared.toLocaleString()} バイトが一致し、キー再投入後の IDENT と DME 自己検査を確認しました。`
         + 'ブートローダとサービスブロックは書いていないので照合対象外です。',
     stageProgramFailed: (n: number) => `書き戻しが ${n} バイト違います。もう一度書いてください。`,
+    stageProgramEcuFault: '読み戻した内容とは別に、DME の整合性チェックが異常を報告しました。変換完了とは判定できません。ログと異常領域を確認してください。',
+    stageProgramCheckUnavailable: '書込み・読戻しと再IDENTは成功しましたが、再起動後の DME 自己検査が応答しません。完了とは判定せず、エンジンを始動せずに接続と検査を確認してください。再書込みが必要とは限りません。',
     powerCycleTitle: 'イグニッションを入れ直してください',
+    programPowerCycleBody: '書込み・読戻し検証が済みました。TUNER と同様にキーを OFF → 10秒待つ → ON にしてください。エンジンは始動せず、POWER CYCLED を押してください。9600 baud で再接続し、IDENT と DME 自己検査を確認して完了します。',
+    programPowerCyclePending: '書込み後のキー OFF → 10秒 → ON と再IDENTが完了するまで、作業は未完了です。',
+    runNeedsReconnect: '再書込みを停止しています。ログを保存し、アプリの接続をやり直してIDENTと読取りで状態を確認してください。接続確認の失敗だけで、再消去が必要とは判断できません。',
     powerCycleBody: 'OFF にして 10 秒待ち、ON に戻してください。戻したら POWER CYCLED を押します。ここで DME はローダを実行します。',
     powerCycleNoCancel: 'この時点で DME は armed です。中止しても次の電源投入でローダは動きます。',
 
@@ -549,13 +556,13 @@ const EN: typeof JA = {
     planStageProgram: 'CSL program + parameters',
     doneTitle: 'Every stage is finished',
     doneBody: 'This DME boots the CSL bootloader and runs the CSL program and parameters.',
-    doneNext: 'Switch the ignition off, wait 30 seconds, switch it on. A diagnostic tool now reads 21132500.',
+    doneNext: 'Fresh IDENT and the ECU self-check passed after key OFF, 10 seconds, then ON. Save the log and your original backup.',
     doneKeepBackup: 'Keep the backup you took at the start. It is the only way back.',
     doneRestart: 'To run PRACTICE again, start over from the connection.',
     planStageDone: 'done',
     planStagePending: 'pending',
     planStageNext: 'next',
-    planProgramNotDerived: 'The program stage shows pending unless it was run in this session. Running it again writes the same bytes.',
+    planProgramNotDerived: 'The program stage is pending unless confirmed in this session. After reconnecting, inspect the read-back. Pending alone is not a reason to erase and write again.',
     programWhichTitle: 'Program to write',
     programWhichWhy: 'A separate question from which build. The two integrity words the patch carries '
         + 'do not move with the calibration, so it composes with any of the six.',
@@ -647,10 +654,15 @@ const EN: typeof JA = {
     stageBlFailed: (n) =>
         `SA0 reads back ${n.toLocaleString()} bytes different. The job cannot go on to the next stage.`,
     stageProgramDone: (compared) =>
-        `${compared.toLocaleString()} bytes were written and read back identical. The bootloader and `
+        `${compared.toLocaleString()} bytes matched; post-ignition IDENT and ECU self-check passed. The bootloader and `
         + 'service block were not written, so they were not checked.',
     stageProgramFailed: (n) => `The read-back differs in ${n} bytes. Write it again.`,
+    stageProgramEcuFault: 'The DME integrity check reports a fault, independently of the read-back comparison. Conversion cannot be marked complete. Check the log and the faulted area.',
+    stageProgramCheckUnavailable: 'Writing, read-back and fresh IDENT passed, but the post-cycle ECU self-check did not answer. Completion is unconfirmed. Keep the engine stopped and check the connection and integrity report; another write may not be necessary.',
     powerCycleTitle: 'Cycle the ignition',
+    programPowerCycleBody: 'Writing and read-back verification passed. As in TUNER: key OFF, wait 10 seconds, then key ON. Keep the engine stopped and press POWER CYCLED. The tool reconnects at 9600 baud and checks IDENT and ECU integrity before completing.',
+    programPowerCyclePending: 'Completion requires key OFF, a 10-second wait, key ON and a fresh IDENT.',
+    runNeedsReconnect: 'Further writes are blocked. Save the log, reconnect the app, and inspect IDENT and read-back. A failed connection check does not establish that another erase is needed.',
     powerCycleBody: 'Switch it off, wait 10 seconds, switch it back on. Then press POWER CYCLED. This is where the DME runs the loader.',
     powerCycleNoCancel: 'The DME is armed by now. Abandoning this does not disarm it - the loader still runs at the next power-up.',
 

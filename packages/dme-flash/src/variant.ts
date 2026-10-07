@@ -417,6 +417,9 @@ export function buildVariant(genuinePair: Uint8Array, choice: VariantChoice): Bu
     if (genuinePair.length !== CALIBRATION_PAIR_LENGTH) {
         throw new Error(`calibration pair must be ${CALIBRATION_PAIR_LENGTH} bytes, got ${genuinePair.length}`);
     }
+    if (analyseChecksums(genuinePair).some(c => !c.valid || !c.paddingIntact)) {
+        throw new Error('source calibration checksum is invalid; refusing to legitimise corrupted data by recalculating it');
+    }
     const pair = Uint8Array.from(genuinePair);
     const edits: Edit[] = [];
     const push = (e: Edit | null) => { if (e) edits.push(e); };

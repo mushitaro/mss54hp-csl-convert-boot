@@ -220,6 +220,7 @@ export function assemble(source: string): AssembledProgram {
             case 'rts': case 'nop': case 'reset': return 2;
             case 'dc': return operands.length * size;
             case 'moveq': return 2;
+            case 'lsr': return 2;
             case 'dbra': case 'dbf': return 4;
             case 'bra': case 'bsr': case 'beq': case 'bne': case 'bmi': case 'bpl':
             case 'bcc': case 'bcs': case 'bhi': case 'bls': case 'bge': case 'blt':
@@ -337,6 +338,14 @@ export function assemble(source: string): AssembledProgram {
                 const reg = Number((dm ?? am)![1]);
                 const ext = (am ? 0x8000 : 0) | (reg << 12) | 0x801;
                 return [0x4e7b, ext];
+            }
+
+            case 'lsr': {
+                const count = /^#([1-8])$/.exec(operands[0] ?? '');
+                const reg = /^d([0-7])$/i.exec(operands[1] ?? '');
+                if (!count || !reg) throw new AssemblyError('lsr #1..8,Dn only', line, text);
+                const sz = size === 1 ? 0 : size === 2 ? 1 : 2;
+                return [0xe008 | ((Number(count[1]) & 7) << 9) | (sz << 6) | Number(reg[1])];
             }
 
             case 'dbra': case 'dbf': {

@@ -1,3 +1,7 @@
+> 2026-10-06: `FAST_ENTRY_WRITE_ENABLED = false`。本手順は現在PRACTICE専用。
+> master 0x4000–0x4017 はOBD読出しでFFに置換され、バックアップから復元できない。
+> 消去中の電源断もホスト復旧では防げないため、実機はサービス領域を消さない9600 baudを使用する。
+
 # FAST ENTRY — 125000 baud への入口と、その代償
 
 TUNER (`E46M3CSL_TuningTool`) の高速化実装を読み、本ツールに取り込んだ結果と、

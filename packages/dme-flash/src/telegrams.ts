@@ -5,7 +5,7 @@
  * by XOR-0xF7 decoding) and cross-checked against the firmware handlers in the 0401 image:
  *
  *     FLASH_LOESCHEN            12 09 07 06 <a2 a1 a0> 00 <xor>     erase
- *     FLASH_SCHREIBEN           12 09 07 02 <a2 a1 a0> ..data..     write (no count byte)
+ *     FLASH_SCHREIBEN           12 <len> 07 02 <a2 a1 a0> <count> ..data.. <xor>
  *     FLASH_SCHREIBEN_ENDE      12 09 07 0f <a2 a1 a0> 00 <xor>     finish
  *     DATENBEREICH_LOESCHEN_0E  12 09 07 0e 42 41 50 00 <xor>       recycling
  *     SEED_KEY                  12 08 90 42 4d 57 05 <xor>          login, "BMW" + level
@@ -143,7 +143,7 @@ export function writeNibbleAllowed(ds2Address: number): boolean {
 }
 
 function addressBytes(ds2Address: number): [number, number, number] {
-    if (ds2Address < 0 || ds2Address > 0xffffff) {
+    if (!Number.isSafeInteger(ds2Address) || ds2Address < 0 || ds2Address > 0xffffff) {
         throw new Error(`DS2 address 0x${ds2Address.toString(16)} does not fit in 24 bits`);
     }
     return [(ds2Address >>> 16) & 0xff, (ds2Address >>> 8) & 0xff, ds2Address & 0xff];
@@ -182,7 +182,7 @@ export function buildEraseTelegram(ds2Address: number): Uint8Array {
     return new Uint8Array([Command.ProgramControl, Segment.Erase, ...addressBytes(ds2Address), 0x00]);
 }
 
-/** Write telegram data: [0x07, 0x02, a2, a1, a0, ...bytes]. The count is implied by the frame length. */
+/** Write telegram data: [0x07, 0x02, a2, a1, a0, count, ...bytes]. Count is explicit, independent of frame length. */
 export function buildWriteTelegram(ds2Address: number, bytes: Uint8Array): Uint8Array {
     assertWriteUnlocked(
         `write ${bytes.length} bytes at 0x${ds2Address.toString(16)}`, tierForAddress(ds2Address));
@@ -194,7 +194,7 @@ export function buildWriteTelegram(ds2Address: number, bytes: Uint8Array): Uint8
     if (bytes.length % 2 !== 0) throw new Error(`write length ${bytes.length} must be even (flash programs in words)`);
     if (ds2Address % 2 !== 0) throw new Error(`write address 0x${ds2Address.toString(16)} must be even`);
     assertResolvable(Segment.Write, ds2Address, bytes.length, 'write');
-    return new Uint8Array([Command.ProgramControl, Segment.Write, ...addressBytes(ds2Address), ...bytes]);
+    return new Uint8Array([Command.ProgramControl, Segment.Write, ...addressBytes(ds2Address), bytes.length, ...bytes]);
 }
 
 /** Finish telegram data: [0x07, 0x0F, a2, a1, a0, 0x00]. */

@@ -17,6 +17,8 @@
  * Condition codes are computed only where the implemented instructions set them, and only the
  * flags those instructions actually produce. Everything here is 32-bit two's complement with
  * explicit masking, because JavaScript bitwise operators are signed.
+ * `tools/analysis/independent_cpu.mjs` differentially checks the exercised common M68K subset
+ * against Unicorn. This is not a complete CPU32 or board/peripheral emulation certificate.
  */
 
 export interface Bus {
@@ -138,6 +140,17 @@ export class Cpu32 {
         this.flags.v = (dn !== sn) && (rn !== dn);
     }
 
+    private setAddFlags(size: 1 | 2 | 4, dst: number, src: number, result: number): void {
+        const mask = size === 4 ? 0xffffffff : (1 << (size * 8)) - 1;
+        const sign = size === 4 ? 0x80000000 : 1 << (size * 8 - 1);
+        const r = result & mask;
+        this.flags.n = (r & sign) !== 0;
+        this.flags.z = r === 0;
+        this.flags.c = ((dst & mask) >>> 0) + ((src & mask) >>> 0) > mask;
+        this.flags.v = ((~(dst ^ src) & (dst ^ r)) & sign) !== 0;
+        this.flags.x = this.flags.c;
+    }
+
     /** Effective address for mode/register, advancing PC over any extension words. */
     private ea(mode: number, reg: number, size: 1 | 2 | 4): { address?: number; kind: 'd' | 'a' | 'mem'; index: number } {
         switch (mode) {
@@ -161,14 +174,7 @@ export class Cpu32 {
                 return { kind: 'mem', index: reg, address: u32((this.a[reg] ?? 0) + disp) };
             }
             case 6: {
-                const ext = this.fetch16();
-                const disp = s8(ext & 0xff);
-                const idxReg = (ext >>> 12) & 7;
-                const isAddress = (ext & 0x8000) !== 0;
-                const isLong = (ext & 0x0800) !== 0;
-                const raw = isAddress ? (this.a[idxReg] ?? 0) : (this.d[idxReg] ?? 0);
-                const index = isLong ? s32(raw) : s16(raw);
-                return { kind: 'mem', index: reg, address: u32((this.a[reg] ?? 0) + disp + index) };
+                return { kind: 'mem', index: reg, address: this.indexedAddress(this.a[reg] ?? 0) };
             }
             case 7:
                 switch (reg) {
@@ -178,6 +184,10 @@ export class Cpu32 {
                         const base = this.pc;
                         const disp = s16(this.fetch16());
                         return { kind: 'mem', index: reg, address: u32(base + disp) };
+                    }
+                    case 3: {
+                        const base = this.pc;
+                        return { kind: 'mem', index: reg, address: this.indexedAddress(base) };
                     }
                     case 4:
                         // Immediates are read-only and are consumed by readEa before it calls
@@ -391,13 +401,7 @@ export class Cpu32 {
             const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
             const stored = u32(result) & mask;
             if (isSub) this.setSubFlags(size, masked, value, stored);
-            else {
-                const signBit = size === 4 ? 0x80000000 : 1 << (bits - 1);
-                this.flags.n = (stored & signBit) !== 0;
-                this.flags.z = stored === 0;
-                this.flags.c = (u32(result) >>> 0) > (mask >>> 0) || (size === 4 && result > 0xffffffff);
-                this.flags.v = false;
-            }
+            else this.setAddFlags(size, masked, value, result);
             this.flags.x = this.flags.c;
             if (ea.kind === 'd') this.setDataRegister(ea.index, size, stored);
             else this.write(size, ea.address!, stored);
@@ -451,16 +455,7 @@ export class Cpu32 {
                     case 0x4: result = masked - immediate; this.setSubFlags(size, masked, immediate, result); this.flags.x = this.flags.c; break;
                     case 0x6: {
                         result = masked + immediate;
-                        const bits = size * 8;
-                        const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
-                        const signBit = size === 4 ? 0x80000000 : 1 << (bits - 1);
-                        const stored = u32(result) & mask;
-                        this.flags.n = (stored & signBit) !== 0;
-                        this.flags.z = stored === 0;
-                        this.flags.c = result > mask;
-                        this.flags.v = false;
-                        this.flags.x = this.flags.c;
-                        result = stored;
+                        this.setAddFlags(size, masked, immediate, result);
                         break;
                     }
                     case 0xa: result = masked ^ immediate; this.setLogicFlags(size, result); break;
@@ -562,16 +557,7 @@ export class Cpu32 {
                 else if (family === 0x9) { result = cur - value; this.setSubFlags(size, cur, value, result); this.flags.x = this.flags.c; }
                 else { // ADD
                     result = cur + value;
-                    const bits = size * 8;
-                    const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
-                    const signBit = size === 4 ? 0x80000000 : 1 << (bits - 1);
-                    const stored = u32(result) & mask;
-                    this.flags.n = (stored & signBit) !== 0;
-                    this.flags.z = stored === 0;
-                    this.flags.c = result > mask;
-                    this.flags.v = false;
-                    this.flags.x = this.flags.c;
-                    result = stored;
+                    this.setAddFlags(size, cur, value, result);
                 }
                 const bits = size * 8;
                 const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
@@ -588,15 +574,7 @@ export class Cpu32 {
             else if (family === 0x9) { result = cur - value; this.setSubFlags(size, cur, value, result); this.flags.x = this.flags.c; }
             else {
                 result = cur + value;
-                const bits = size * 8;
-                const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
-                const stored = u32(result) & mask;
-                this.flags.n = (stored & (size === 4 ? 0x80000000 : 1 << (bits - 1))) !== 0;
-                this.flags.z = stored === 0;
-                this.flags.c = result > mask;
-                this.flags.v = false;
-                this.flags.x = this.flags.c;
-                result = stored;
+                this.setAddFlags(size, cur, value, result);
             }
             const bits = size * 8;
             const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
@@ -621,10 +599,14 @@ export class Cpu32 {
             const mask = size === 4 ? 0xffffffff : (1 << bits) - 1;
             let value = this.maskReg(reg, size);
             let carry = false;
+            let overflow = false;
             for (let i = 0; i < count; i++) {
                 if (isLeft) {
                     carry = (value & (size === 4 ? 0x80000000 : 1 << (bits - 1))) !== 0;
                     value = u32(value << 1) & mask;
+                    if (kind === 0 && carry !== ((value & (size === 4 ? 0x80000000 : 1 << (bits - 1))) !== 0)) {
+                        overflow = true;
+                    }
                 } else {
                     carry = (value & 1) !== 0;
                     if (kind === 0) { // ASR - arithmetic, preserve sign
@@ -639,7 +621,7 @@ export class Cpu32 {
             this.setDataRegister(reg, size, value);
             this.flags.n = (value & (size === 4 ? 0x80000000 : 1 << (bits - 1))) !== 0;
             this.flags.z = value === 0;
-            this.flags.v = false;
+            this.flags.v = overflow;
             if (count > 0) { this.flags.c = carry; this.flags.x = carry; }
             else this.flags.c = false;
             return;
@@ -655,21 +637,28 @@ export class Cpu32 {
         return size === 4 ? u32(v) : size === 2 ? u16(v) : u8(v);
     }
 
+    /** CPU32 RM 3.4.4: brief and full extension, without memory indirection. */
+    private indexedAddress(base: number): number {
+        const ext = this.fetch16();
+        const reg = (ext >>> 12) & 7;
+        const raw = (ext & 0x8000) ? this.a[reg]! : this.d[reg]!;
+        const index = (ext & 0x0800) ? s32(raw) : s16(raw);
+        const scaled = index * (1 << ((ext >>> 9) & 3));
+        if (!(ext & 0x0100)) return u32(base + s8(ext) + scaled);
+        const bd = (ext >>> 4) & 3;
+        if ((ext & 15) || bd === 0) {
+            throw new CpuFaultError('reserved or memory-indirect extension is illegal on CPU32', this.pc - 2);
+        }
+        const disp = bd === 1 ? 0 : bd === 2 ? s16(this.fetch16()) : s32(this.fetch32());
+        return u32((ext & 0x80 ? 0 : base) + (ext & 0x40 ? 0 : scaled) + disp);
+    }
+
     /** Effective address for control operands (JMP/JSR/LEA/PEA) - no size, no post-increment. */
     private controlEa(mode: number, reg: number): number {
         switch (mode) {
             case 2: return u32(this.a[reg] ?? 0);
             case 5: { const disp = s16(this.fetch16()); return u32((this.a[reg] ?? 0) + disp); }
-            case 6: {
-                const ext = this.fetch16();
-                const disp = s8(ext & 0xff);
-                const idxReg = (ext >>> 12) & 7;
-                const isAddress = (ext & 0x8000) !== 0;
-                const isLong = (ext & 0x0800) !== 0;
-                const raw = isAddress ? (this.a[idxReg] ?? 0) : (this.d[idxReg] ?? 0);
-                const index = isLong ? s32(raw) : s16(raw);
-                return u32((this.a[reg] ?? 0) + disp + index);
-            }
+            case 6: return this.indexedAddress(this.a[reg] ?? 0);
             case 7:
                 switch (reg) {
                     case 0: return u32(s16(this.fetch16()));
@@ -677,14 +666,7 @@ export class Cpu32 {
                     case 2: { const base = this.pc; const disp = s16(this.fetch16()); return u32(base + disp); }
                     case 3: {
                         const base = this.pc;
-                        const ext = this.fetch16();
-                        const disp = s8(ext & 0xff);
-                        const idxReg = (ext >>> 12) & 7;
-                        const isAddress = (ext & 0x8000) !== 0;
-                        const isLong = (ext & 0x0800) !== 0;
-                        const raw = isAddress ? (this.a[idxReg] ?? 0) : (this.d[idxReg] ?? 0);
-                        const index = isLong ? s32(raw) : s16(raw);
-                        return u32(base + disp + index);
+                        return this.indexedAddress(base);
                     }
                     default: throw new CpuFaultError(`unsupported control mode 7/${reg}`, this.pc);
                 }
@@ -720,6 +702,24 @@ export class Cpu32 {
                 address = u32(address + size);
             }
             this.a[reg] = address;
+            return;
+        }
+        // Control addressing transfers in ascending register order and never updates An.
+        // PC-relative modes are legal only for memory-to-register transfers.
+        if (mode === 2 || mode === 5 || mode === 6
+            || (mode === 7 && (reg <= 1 || (toRegisters && reg <= 3)))) {
+            let address = this.controlEa(mode, reg);
+            for (let i = 0; i < 16; i++) {
+                if ((mask & (1 << i)) === 0) continue;
+                if (toRegisters) {
+                    const value = this.read(size, address);
+                    const extended = size === 2 ? u32(s16(value)) : u32(value);
+                    if (i < 8) this.d[i] = extended; else this.a[i - 8] = extended;
+                } else {
+                    this.write(size, address, i < 8 ? this.d[i]! : this.a[i - 8]!);
+                }
+                address = u32(address + size);
+            }
             return;
         }
         throw new UnimplementedOpcodeError(op, pc0);

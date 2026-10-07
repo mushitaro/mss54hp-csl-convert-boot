@@ -46,9 +46,14 @@ export function calibrationPairFrom(file: AustauschFile): Uint8Array {
         if (nibble !== 0x2 && nibble !== 0xa) {
             throw new Error(`section 0x${section.address.toString(16)} is not a calibration window`);
         }
-        const base = (nibble === 0xa ? HALF_BASE.slave : HALF_BASE.master) + (section.address & 0xfffff);
-        if (base + section.bytes.length > CALIBRATION_PAIR_LENGTH) {
+        const offset = section.address & 0xfffff;
+        const base = (nibble === 0xa ? HALF_BASE.slave : HALF_BASE.master) + offset;
+        if (!Number.isSafeInteger(section.address) || section.address < 0 || section.address > 0xffffff
+            || offset + section.bytes.length > CALIBRATION_HALF_LENGTH) {
             throw new Error(`section 0x${section.address.toString(16)} runs past the pair`);
+        }
+        if (covered.subarray(base, base + section.bytes.length).some(b => b !== 0)) {
+            throw new Error(`calibration sections overlap at 0x${section.address.toString(16)}`);
         }
         pair.set(section.bytes, base);
         covered.fill(1, base, base + section.bytes.length);

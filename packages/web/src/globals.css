@@ -166,10 +166,10 @@ body {
 
 /* -- Phone base -------------------------------------------------------------
    The app owns the viewport and never scrolls as a page; only designated panes
-   scroll. `100dvh` rather than `100vh` because a mobile browser's toolbar
-   changes the latter mid-gesture, which moves a fixed footer under the thumb
-   that is reaching for it. */
-html, body, #root { height: 100dvh; }
+   scroll. Use the smallest viewport so returning browser chrome cannot hide
+   the action band. Standalone PWA and browser share the same sizing rule. */
+html, body, #root { height: 100svh; }
+html, body { overflow: hidden; overscroll-behavior: none; }
 body {
   overscroll-behavior: none;           /* no pull-to-refresh mid-flash */
   -webkit-tap-highlight-color: transparent;

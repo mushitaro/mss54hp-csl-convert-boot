@@ -18,10 +18,8 @@
  *  1. **Verifies the staged sector before arming**, byte for byte, while the ECU still boots.
  *  2. **Stops at the power cycle and waits for a person.** The ignition is a physical act; nothing
  *     here can perform it, and pretending otherwise would be the one place a simulation lied.
- *  3. **Leaves retry to the link.** A lost telegram is retried there, on the transport failure
- *     only; a write that round-tripped and came back refused means the device tried and could not,
- *     and that is never repeated. This is the one path where the distinction is not academic:
- *     every write here happens with the calibration sector already erased.
+ *  3. **Leaves ambiguous WRITE recovery to the session.** It reads the target twice, accepts
+ *     matching bytes, and retries only an entirely erased range. A negative ACK is never replayed.
  *
  * ## Probe and replacement are the same run up to the power cycle
  *
@@ -40,8 +38,8 @@ import type { Ds2Session } from './session';
 import { SessionError } from './session';
 import type { BlPlan, BlStep } from './blReplace';
 import { assertBlReplaceable } from './blReplace';
-import { SA0_LENGTH, extractSa0, identifyBootloader, verifyBootloaderCrc } from './bootloaderImage';
-import { STAGED_SECTOR_LENGTH, MAGIC_OFFSET, MAGIC_CLEARED, type LoaderPurpose } from './blLoader';
+import { SA0_LENGTH, BOOTLOADER_DIFF_OFFSETS, extractSa0, identifyBootloader, verifyBootloaderCrc } from './bootloaderImage';
+import { STAGED_SECTOR_LENGTH, MAGIC_OFFSET, MAGIC_CLEARED, BOOTLOADER_IMAGE_OFFSET, sectorIsArmed, type LoaderPurpose } from './blLoader';
 import type { Processor } from './imageLayout';
 
 export type BlPhase =
@@ -54,7 +52,7 @@ export interface BlProgress {
     /** Bytes of the staged sector written so far, for a progress bar. */
     readonly written: number;
     readonly total: number;
-    /** True once the ECU will boot into the loader - i.e. past the point of no return. */
+    /** True once arming was dispatched: the ECU may be armed even if its ACK was lost. */
     readonly armed: boolean;
 }
 
@@ -98,12 +96,7 @@ export interface BlOutcome {
     readonly differingCount: number;
     /** Up to eight differing offsets, for diagnosis. NOT the count - see `differingCount`. */
     readonly differingOffsets: readonly number[];
-    /**
-     * The magic longword as read back, and whether the loader cleared it.
-     *
-     * Populated for a probe, where it IS the result. Undefined for a replacement, whose staged
-     * sector is about to be overwritten by a real calibration anyway.
-     */
+    /** The magic must be cleared after either type of loader has run. */
     readonly magicAfter?: number;
     readonly magicCleared?: boolean;
 }
@@ -120,11 +113,26 @@ export async function runBlReplace(
     intendedSa0: Uint8Array,
     hooks: BlHooks,
 ): Promise<BlOutcome> {
+    // Typed arrays remain mutable despite readonly fields. Own the validated bytes across awaits
+    // and callbacks, so UI changes cannot turn a checked plan into a different write.
+    plan = { ...plan, steps: plan.steps.map(s => ({ ...s, data: s.data?.slice() })) };
+    intendedSa0 = intendedSa0.slice();
     // Before the first byte. A plan that would erase outside the calibration window, or arm before
     // verifying, must not get as far as a login.
     assertBlReplaceable(plan);
+    if (typeof hooks.onPowerCycle !== 'function') throw new SessionError('manual ignition-cycle handler is required before staging');
     if (intendedSa0.length !== SA0_LENGTH) {
         throw new SessionError(`intended SA0 is ${intendedSa0.length} bytes, expected ${SA0_LENGTH}`);
+    }
+    if (plan.purpose === 'replace') {
+        const sector = new Uint8Array(STAGED_SECTOR_LENGTH);
+        for (const s of plan.steps) {
+            if (s.kind === 'write-staged') sector.set(s.data!, s.ds2Address! - plan.ds2Address);
+        }
+        if (compareBytes(sector.subarray(BOOTLOADER_IMAGE_OFFSET,
+            BOOTLOADER_IMAGE_OFFSET + SA0_LENGTH), intendedSa0).count !== 0) {
+            throw new SessionError('staged bootloader does not match the intended SA0');
+        }
     }
 
     const say = (line: string): void => hooks.onEvent?.(line);
@@ -134,6 +142,8 @@ export async function runBlReplace(
         hooks.onProgress?.({ phase, note, written, total: STAGED_SECTOR_LENGTH, armed });
 
     const staged = new Uint8Array(STAGED_SECTOR_LENGTH).fill(0xff);
+    const peerAddress = plan.processor === 'master' ? 0xa00000 : 0x200000;
+    let peerBefore: Uint8Array | null = null;
 
     for (const step of plan.steps) {
         switch (step.kind) {
@@ -143,17 +153,57 @@ export async function runBlReplace(
                 say('LOGIN accepted');
                 break;
 
-            case 'read-before':
-                // The capture is taken by the wizard before this runs - repeating half an hour of
-                // reading here would be the wrong place for it. Recorded so the plan and the run
-                // stay in step rather than silently diverging.
-                say('BACKUP already captured and verified by the caller');
+            case 'read-before': {
+                report('read-before', 'checking the currently connected bootloader before erasing');
+                const first = (await session.readBootloader(plan.processor)).sa0.slice();
+                const second = (await session.readBootloader(plan.processor)).sa0;
+                if (compareBytes(first, second).count !== 0 || !verifyBootloaderCrc(first, plan.processor).valid) {
+                    throw new SessionError('live bootloader reads disagree or its CRC is invalid; nothing erased');
+                }
+                // A valid CRC and one identifying operand do not establish a compatible reset
+                // handler. All bytes except the measured M3/CSL differences must match the target.
+                const allowed = plan.purpose === 'replace' ? BOOTLOADER_DIFF_OFFSETS[plan.processor] : [];
+                if (first.some((b, i) => b !== intendedSa0[i] && !allowed.includes(i))) {
+                    throw new SessionError('live bootloader differs from the intended compatible SA0; nothing erased');
+                }
+                say('LIVE SA0 confirmed twice and compatible; full recovery backup remains the caller\'s responsibility');
+                await session.preflightProgramming('calibration');
+                peerBefore = (await session.readWindow(peerAddress, STAGED_SECTOR_LENGTH)).slice();
+                const peerAgain = await session.readWindow(peerAddress, STAGED_SECTOR_LENGTH);
+                if (compareBytes(peerBefore, peerAgain).count !== 0) {
+                    throw new SessionError('peer calibration reads disagree; nothing erased');
+                }
+                if (sectorIsArmed(peerBefore)) {
+                    throw new SessionError('peer CPU is already armed; refusing to erase either calibration');
+                }
                 break;
+            }
 
             case 'erase-calibration':
                 report('erase-calibration', step.note);
                 await session.eraseWindow(step.ds2Address!);
                 say(`ERASED calibration at 0x${step.ds2Address!.toString(16)}`);
+                // A data-session erase can affect BOTH CPUs. Restore the peer before staging or
+                // arming the target, and never infer its contents from a distributable image.
+                if (!peerBefore) throw new SessionError('missing peer snapshot');
+                {
+                    const peerAfter = await session.readWindow(peerAddress, STAGED_SECTOR_LENGTH);
+                    if (compareBytes(peerAfter, peerBefore).count !== 0) {
+                        if (!peerAfter.every(b => b === 0xff)) {
+                            throw new SessionError('peer calibration was partially changed by erase; no loader armed');
+                        }
+                        for (let offset = 0; offset < peerBefore.length; offset += 122) {
+                            const bytes = peerBefore.slice(offset, offset + 122);
+                            if (!bytes.every(b => b === 0xff)) await session.writeChunk(peerAddress + offset, bytes);
+                        }
+                    }
+                    for (let pass = 0; pass < 2; pass++) {
+                        if (compareBytes(await session.readWindow(peerAddress, STAGED_SECTOR_LENGTH), peerBefore).count !== 0) {
+                            throw new SessionError('peer calibration restore did not verify; no loader armed');
+                        }
+                    }
+                    say('PEER calibration preserved and verified twice before target staging');
+                }
                 break;
 
             case 'write-staged': {
@@ -161,8 +211,17 @@ export async function runBlReplace(
                     // The magic completes here. Everything before it has been verified; from the
                     // moment this acknowledgement comes back the ECU boots into the loader.
                     report('arm', step.note);
-                    await session.writeChunk(step.ds2Address!, step.data!);
+                    // An ACK can be lost after the magic lands. From dispatch onward treat the
+                    // ECU as potentially armed, even when the exchange subsequently fails.
                     armed = true;
+                    report('arm', 'arming dispatched; the ECU may now be armed');
+                    try {
+                        await session.writeChunk(step.ds2Address!, step.data!);
+                    } catch (error) {
+                        throw new SessionError('The arming write was dispatched but not confirmed. '
+                            + 'The ECU may already be armed: the staged loader can run at the next power-up. '
+                            + `Do not assume that the failed acknowledgement cancelled it. ${error instanceof Error ? error.message : String(error)}`);
+                    }
                     written += step.data!.length;
                     say('ARMED: the magic is in flash. Every power-up now runs the loader.');
                     break;
@@ -177,7 +236,9 @@ export async function runBlReplace(
             case 'verify-staged': {
                 report('verify-staged', step.note);
                 const back = await session.readWindow(plan.ds2Address, STAGED_SECTOR_LENGTH);
-                const differing = compareBytes(back, staged, magicRange(plan));
+                // Pending bytes must still be erased, including the magic itself. Skipping the
+                // arming chunk hid failed erases and could leave a partially armed sector.
+                const differing = compareBytes(back, staged);
                 if (differing.count > 0) {
                     throw new SessionError(
                         `the staged sector does not read back as written`
@@ -200,28 +261,22 @@ export async function runBlReplace(
                 say('WAITING for the ignition to be cycled');
                 await hooks.onPowerCycle();
                 say('POWER CYCLED');
+                await session.resumeAfterPowerCycle();
                 break;
 
             case 'read-after': {
                 report('read-after', step.note);
 
-                // Reaching this line is already the probe's first result: the reset handler checks
-                // the magic before the K-line comes up, so a DME that answers has cleared it.
-                if (plan.purpose === 'probe') {
-                    say('DS2 ANSWERS - the DME reached its ordinary firmware, so the magic is gone');
-                }
-
                 const { sa0, report: after } = await session.readBootloader(plan.processor);
+                say('DS2 ANSWERS - the DME reached its diagnostic firmware');
                 const differing = compareBytes(sa0, intendedSa0);
 
-                let magicAfter: number | undefined;
-                if (plan.purpose === 'probe') {
-                    // Read it directly too. The inference above is sound but it is an inference,
-                    // and this is four bytes.
-                    const bytes = await session.readWindow(plan.ds2Address + MAGIC_OFFSET, 4);
-                    magicAfter = (((bytes[0] ?? 0) << 24) | ((bytes[1] ?? 0) << 16)
-                        | ((bytes[2] ?? 0) << 8) | (bytes[3] ?? 0)) >>> 0;
-                }
+                // DS2 is served by the master; an answer alone does not prove the slave reset.
+                // Confirm the target processor's magic explicitly for both loader purposes.
+                const bytes = await session.readWindow(plan.ds2Address + MAGIC_OFFSET, 4);
+                if (bytes.length !== 4) throw new SessionError('incomplete post-cycle magic read');
+                const magicAfter = ((bytes[0]! << 24) | (bytes[1]! << 16)
+                    | (bytes[2]! << 8) | bytes[3]!) >>> 0;
 
                 const outcome: BlOutcome = {
                     processor: plan.processor,
@@ -232,10 +287,8 @@ export async function runBlReplace(
                     matchesIntended: differing.count === 0,
                     differingCount: differing.count,
                     differingOffsets: differing.first,
-                    ...(magicAfter === undefined ? {} : {
-                        magicAfter,
-                        magicCleared: magicAfter === MAGIC_CLEARED,
-                    }),
+                    magicAfter,
+                    magicCleared: magicAfter === MAGIC_CLEARED,
                 };
 
                 if (plan.purpose === 'probe') {
@@ -245,6 +298,10 @@ export async function runBlReplace(
                         + ` ${outcome.matchesIntended ? 'unchanged' : 'CHANGED - it should not have been'}`);
                     report('done', 'probe complete');
                 } else {
+                    if (plan.processor === 'master' && outcome.matchesIntended && outcome.magicCleared && outcome.crcValid) {
+                        await session.preflightProgramming('program', true);
+                        say('MASTER program-mode handoff confirmed in live AIF twice');
+                    }
                     say(`SA0 now ${outcome.flavour}, CRC ${outcome.crcValid ? 'valid' : 'INVALID'},`
                         + ` ${outcome.matchesIntended ? 'matches' : 'DOES NOT MATCH'} the staged image`);
                     report('done', 'replacement complete');
@@ -263,14 +320,6 @@ export async function runBlReplace(
     throw new SessionError('the plan ended without reading the bootloader back');
 }
 
-/** Where the magic lives, so the pre-arm verify does not fail on bytes not yet written. */
-function magicRange(plan: BlPlan): { start: number; end: number } {
-    const arming = plan.steps.find((s) => s.armsTheEcu === true && s.kind === 'write-staged');
-    if (!arming?.ds2Address || !arming.data) return { start: 0, end: 0 };
-    const start = arming.ds2Address - plan.ds2Address;
-    return { start, end: start + arming.data.length };
-}
-
 /**
  * How many bytes differ, and where the first few of them are.
  *
@@ -280,20 +329,22 @@ function magicRange(plan: BlPlan): { start: number; end: number } {
  * the sample WAS the answer - made every large failure report the same small number.
  */
 function compareBytes(
-    a: Uint8Array, b: Uint8Array, skip?: { start: number; end: number },
+    a: Uint8Array, b: Uint8Array,
 ): { count: number; first: number[] } {
     const first: number[] = [];
     let count = 0;
     const n = Math.min(a.length, b.length);
     for (let i = 0; i < n; i++) {
-        if (skip && i >= skip.start && i < skip.end) continue;
         if (a[i] === b[i]) continue;
         count++;
         if (first.length < 8) first.push(i);
     }
     // A length mismatch is a difference too, and silently comparing the shorter of the two would
     // report a truncated read-back as a perfect match.
-    if (a.length !== b.length) count += Math.abs(a.length - b.length);
+    if (a.length !== b.length) {
+        count += Math.abs(a.length - b.length);
+        if (first.length < 8) first.push(n);
+    }
     return { count, first };
 }
 

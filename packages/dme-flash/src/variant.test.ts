@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseAustauschDatei } from './paband';
-import { calibrationPairFrom, analyseChecksums } from './calibrationImage';
+import { calibrationPairFrom, analyseChecksums, correctChecksums } from './calibrationImage';
 import {
     buildVariant, verifyManifest, variantWarnings, variantLabel, dtcEnabled, DTC_RECORDS,
     MAP_LATER_IS_OFF, MAP_DTC_STAYS_ENABLED, type VariantChoice,
@@ -108,6 +108,7 @@ describe('MAP off', () => {
     maybe('refuses to build when the DTC table is not where CSL 0401 puts it', () => {
         const g = genuine();
         g[DTC_RECORDS.mapPressure.offset] = 0x00; // corrupt the code byte
+        correctChecksums(g); // Exercise the independent layout guard after the checksum gate.
         expect(() => buildVariant(g, { map: 'off', flap: 'present', cams: 'csl' }))
             .toThrow(/not CSL 0401 - refusing to patch/);
     });

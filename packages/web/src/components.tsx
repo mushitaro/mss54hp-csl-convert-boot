@@ -3,11 +3,8 @@
  *
  * Two departures from the desktop reference, both forced by the phone and both deliberate:
  *
- *  - **Reserved slots are two lines, not one.** The system reserves a 14px line for a transient
- *    notice. At 430px a sentence explaining why a control is locked does not fit in one line, and
- *    the rule that matters more is that the reason must be *rendered* - a `title` is a mouse
- *    convenience and does not exist on a touch screen. So the slot is `h-[34px]` and the sentences
- *    are written to fit it.
+ *  - **The notice reserves 64px.** Phone instructions need multiple lines. Long errors remain
+ *    touch-scrollable instead of losing their ending to line-clamp or a mouse-only tooltip.
  *  - **Touch targets are 44px minimum.** A `text-[10px]` button is legible and untappable; the
  *    padding around it is what makes it a control.
  *
@@ -97,8 +94,11 @@ export function Notice({ kind = 'info', children }: { kind?: NoticeKind; childre
         : kind === 'warn' ? 'text-amber-400'
             : kind === 'ok' ? 'text-emerald-400' : 'text-slate-500';
     return (
-        <div className="h-[34px] shrink-0 px-4 flex items-center">
-            <p className={`text-[10px] leading-[1.35] line-clamp-2 ${paint}`}>{children}</p>
+        <div className="h-[64px] shrink-0 px-4 py-2">
+            <div key={typeof children === 'string' ? children : undefined} role="status"
+                tabIndex={children ? 0 : undefined} className="h-full overflow-y-auto overscroll-contain">
+                <p className={`text-[10px] leading-[1.5] [overflow-wrap:anywhere] ${paint}`}>{children}</p>
+            </div>
         </div>
     );
 }
@@ -207,15 +207,16 @@ export function Hub({ label, Icon, onClick, busy, disabled, danger }: HubConfig)
         <div className="relative">
             <div className={`absolute -inset-1 rounded-full border pointer-events-none ${ring}`} />
             <button
+                data-hub
                 type="button"
                 onClick={inert ? undefined : onClick}
                 disabled={inert}
-                className={`relative w-20 h-20 rounded-full flex flex-col items-center justify-center gap-1
+                className={`relative size-[72px] shrink-0 rounded-full flex flex-col items-center justify-center gap-1
                             bg-slate-900 border shadow-2xl transition ${face}`}
             >
                 {busy
-                    ? <Loader2 className="w-5 h-5 stroke-[1.5] animate-spin" />
-                    : <Icon className="w-5 h-5 stroke-[1.5]" />}
+                    ? <Loader2 className="size-[18px] stroke-[1.5] animate-spin" />
+                    : <Icon className="size-[18px] stroke-[1.5]" />}
                 <span className="text-[8px] font-bold tracking-widest uppercase">{label}</span>
             </button>
         </div>
@@ -248,7 +249,7 @@ export function SubAction(
             type="button"
             onClick={disabled ? undefined : onClick}
             disabled={disabled}
-            className={`px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition ${paint}`}
+            className={`min-h-[44px] min-w-[44px] shrink-0 px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition ${paint}`}
         >
             {label}
         </button>

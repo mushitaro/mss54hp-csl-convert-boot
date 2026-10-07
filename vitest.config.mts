@@ -5,6 +5,9 @@ export default defineConfig({
     test: {
         include: ['packages/**/*.test.ts'],
         environment: 'node',
+        // CPU emulation and full-image fault campaigns otherwise contend with the
+        // checksum corpus and cause wall-clock timeouts on high-core-count hosts.
+        maxWorkers: 4,
     },
     resolve: {
         /**

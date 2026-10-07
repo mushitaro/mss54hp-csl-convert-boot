@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-    planFlash, validateSequence, assertFlashable, describePlan,
+    planFlash, validateSequence, assertFlashable, describePlan, ERASE_SESSION_ADDRESS,
     type FlashPlan, type FlashStep,
 } from './flashSequence';
 import { WRITE_CHUNK_MAX, Segment } from './regionMap';
@@ -21,15 +21,15 @@ function fullImage(): Uint8Array {
 describe('a full conversion plan', () => {
     const plan = planFlash({ image: fullImage(), windowKinds: ['program', 'calibration'] });
 
-    it('erases each of the four windows exactly once, before writing it', () => {
-        expect(plan.eraseCount).toBe(4);
+    it('erases both CPUs once per kind, before writing either CPU', () => {
+        expect(plan.eraseCount).toBe(2);
         // Every write is preceded (somewhere earlier) by an erase of its window.
         const erasedBefore = new Set<number>();
         for (const step of plan.steps) {
             if (step.kind === 'erase') erasedBefore.add(step.ds2Address!);
             if (step.kind === 'write') {
                 const w = IMAGE_WINDOWS.find((x) => step.ds2Address! >= x.ds2Address && step.ds2Address! < x.ds2Address + x.length)!;
-                expect(erasedBefore.has(w.ds2Address)).toBe(true);
+                expect(erasedBefore.has(ERASE_SESSION_ADDRESS[w.kind])).toBe(true);
             }
         }
     });
@@ -67,7 +67,7 @@ describe('a full conversion plan', () => {
 describe('a calibration-only reflash never touches a program window', () => {
     const plan = planFlash({ image: fullImage(), windowKinds: ['calibration'] });
     it('erases only the two calibration windows', () => {
-        expect(plan.eraseCount).toBe(2);
+        expect(plan.eraseCount).toBe(1);
         expect(plan.writeBytes).toBe(0x10000);
         for (const s of plan.steps) {
             if (s.kind !== 'erase' && s.kind !== 'write') continue;
@@ -156,7 +156,7 @@ describe('the validator catches every unsafe plan it is meant to', () => {
 describe('describePlan', () => {
     it('summarises windows and reports PASS for a good plan', () => {
         const text = describePlan(planFlash({ image: fullImage(), windowKinds: ['program', 'calibration'] }));
-        expect(text).toMatch(/4 erase/);
+        expect(text).toMatch(/2 erase/);
         expect(text).toMatch(/validation: PASS/);
     });
 });

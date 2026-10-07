@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { assemble } from './asm68k';
+import { crc16Arc } from '../paband';
 import { Cpu32 } from './cpu32';
 import { Machine } from './machine';
 import { FLASH_LENGTH } from './flashAm29f400';
@@ -34,6 +35,8 @@ const haveBoth = existsSync(STOCK_M3) && existsSync(CP_V1);
 const stockImage = existsSync(STOCK_M3) ? new Uint8Array(readFileSync(STOCK_M3)) : undefined;
 const cslImage = existsSync(CP_V1) ? new Uint8Array(readFileSync(CP_V1)) : undefined;
 const maybe = haveBoth ? it : it.skip;
+
+import { firmwareRig } from './firmwareHarness';
 
 const loader = assemble(readFileSync('tools/loader/replace.s', 'utf8'));
 
@@ -54,17 +57,25 @@ interface Rig {
 }
 
 function stagedRig(options: {
+    processor?: 'master' | 'slave';
     /** Leave the image region erased, as a mis-staged sector would be. */
     blankImage?: boolean;
     flashOptions?: ConstructorParameters<typeof Machine>[1];
 } = {}): Rig {
     // Start from a real standard M3 ECU: its own bootloader in SA0, its own service block.
-    const flash = stockImage!.slice(0, FLASH_LENGTH);
+    const processor = options.processor ?? 'master';
+    const base = processor === 'master' ? 0 : FLASH_LENGTH;
+    const prepared = firmwareRig(stockImage!.slice(base, base + FLASH_LENGTH));
+    prepared.machine.writeByte(0xffd00e, 0x3c);
+    if (prepared.call(0x2d16) !== 1) throw new Error('fixture could not enter data mode');
+    const flash = prepared.machine.flash.array.slice();
 
     // Stage the calibration sector: erased, loader, replacement image, magic last.
     flash.fill(0xff, SECTOR_BASE, SECTOR_BASE + 0x8000);
     flash.set(loader.bytes, SECTOR_BASE);
-    if (!options.blankImage) flash.set(extractSa0(cslImage!, 'master'), IMAGE_OFFSET);
+    if (!options.blankImage) flash.set(extractSa0(cslImage!, processor), IMAGE_OFFSET);
+    const crc = crc16Arc(flash.subarray(IMAGE_OFFSET, IMAGE_OFFSET + SA0_LENGTH));
+    flash.set([crc >>> 8, crc & 0xff, (crc >>> 8) ^ 0xff, (crc & 0xff) ^ 0xff], 0xd000);
     flash[MAGIC_OFFSET] = (MAGIC >>> 24) & 0xff;
     flash[MAGIC_OFFSET + 1] = (MAGIC >>> 16) & 0xff;
     flash[MAGIC_OFFSET + 2] = (MAGIC >>> 8) & 0xff;
@@ -225,9 +236,10 @@ describe('replacing a standard M3 bootloader with the genuine CSL one', () => {
      * is slow for a reason nobody else in the suite shares, and a global raise would let a
      * genuinely hung test sit for half a minute.
      */
-    maybe('changes only the bootloader sector and the magic', () => {
+    maybe('changes only SA0, magic and the two counter words', () => {
         const rig = stagedRig();
         const before = Uint8Array.from(rig.machine.flash.array);
+        before.set([0, 0, 255, 0], 0x4808);
         run(rig);
         const after = rig.machine.flash.array;
         for (let i = SA0_LENGTH; i < FLASH_LENGTH; i++) {
@@ -236,17 +248,117 @@ describe('replacing a standard M3 bootloader with the genuine CSL one', () => {
         }
     }, 30_000);
 
-    maybe('leaves the service block - VIN, AIF, flash counter - exactly as it found it', () => {
+    maybe('preserves all service bytes except the exact program-mode handoff', () => {
         // SA1 and SA2 hold car-specific data that no distributable image contains. Losing them
         // is unrecoverable from anything but this car's own backup.
         const rig = stagedRig();
-        run(rig);
-        expect(Array.from(rig.machine.flash.array.subarray(0x4000, 0x8000)))
-            .toEqual(Array.from(stockImage!.subarray(0x4000, 0x8000)));
+        const expected = rig.machine.flash.array.slice(0x4000, 0x8000);
+        expected.set([0, 0, 255, 0], 0x808);
+        expect(run(rig)).toBe('done');
+        expect(rig.machine.flash.array.subarray(0x4000, 0x8000)).toEqual(expected);
     });
 });
 
 describe('negative controls', () => {
+    maybe.each([0x480a, 0x4808])('counter commit fault at %i leaves verified SA0 and never reports done', stuckByteOffset => {
+        const rig = stagedRig({ flashOptions: { stuckByteOffset } });
+        expect(run(rig)).toBe('giveup');
+        expect(rig.machine.flash.array.slice(0, SA0_LENGTH)).toEqual(extractSa0(cslImage!, 'master'));
+        expect(rig.machine.readWord(0x4808)).toBe(0x00ff);
+        expect(rig.machine.readWord(0x480a)).toBe(stuckByteOffset === 0x480a ? 0xffff : 0xff00);
+        expect(magicAt(rig.machine)).toBe(0);
+    });
+    maybe('validates every counter position before erasing and preserves exact service bytes', () => {
+        for (let used = 1; used <= 64; used++) {
+            const rig = stagedRig(); const bytes = rig.machine.flash.array;
+            bytes.fill(255, 0x4800, 0x4880); bytes.fill(0, 0x4800, 0x4800 + used * 2);
+            bytes.set([0, 255], 0x4800 + used * 2 - 2);
+            const expected = bytes.slice(0x4000, 0x8000);
+            if (used <= 55) expected.set([0, 0, 255, 0], 0x800 + used * 2 - 2);
+            expect(run(rig), `used=${used}`).toBe(used <= 55 ? 'done' : 'giveup');
+            expect(rig.erasedSa0).toBe(used <= 55);
+            expect(Buffer.compare(Buffer.from(bytes.subarray(0x4000, 0x8000)), Buffer.from(expected))).toBe(0);
+            expect(rig.machine.watchdogFired).toBe(false);
+            expect(rig.machine.flash.violations).toEqual([]);
+        }
+    }, 30000);
+    maybe.each([0, 0xff00, 0xf500, 0x00f5, 0x1234])('refuses unexpected marker %i before SA0 erase', marker => {
+        const rig = stagedRig(); rig.machine.flash.array.set([marker >>> 8, marker & 255], 0x4808);
+        expect(run(rig)).toBe('giveup'); expect(rig.erasedSa0).toBe(false);
+    });
+    it('neither step clearing 00FF can partially program the special boot marker 00F5', () => {
+        for (const [before, target] of [[0xff, 0x0f], [0x0f, 0]]) {
+            for (let partial = 0; partial <= 255; partial++) {
+                if ((partial & before!) !== partial || (partial & target!) !== target) continue;
+                expect(partial).not.toBe(0xf5);
+                expect(partial).not.toBe(0xf500);
+            }
+        }
+    });
+    maybe.each([1, 2, 3, 4, 5, 16, 4099, 8194, 8195, 8196, 8197, 8198])(
+        'models loss of power during embedded operation %s without claiming recovery', cut => {
+            const rig = stagedRig({ flashOptions: { programPolls: 3, erasePolls: 4 } });
+            const before = rig.machine.flash.array.slice(0, SA0_LENGTH);
+            let operations = 0;
+            let wasBusy = false;
+            rig.cpu.run(() => {
+                const busy = rig.machine.flash.busy;
+                if (busy && !wasBusy) operations++;
+                wasBusy = busy;
+                return busy && operations === cut;
+            });
+            const atCut = rig.machine.flash.array.slice();
+            rig.machine.flash.powerCycle();
+            expect(rig.cpu.pc).not.toBe(rig.doneAddress);
+            expect(rig.machine.flash.busy).toBe(false);
+            expect(rig.machine.flash.array).toEqual(atCut);
+            if (cut <= 3) {
+                // This model commits atomically at polling completion. Real brownout can
+                // partially erase/program; this assertion is only its pre-commit bound.
+                expect(atCut.slice(0, SA0_LENGTH)).toEqual(before);
+            } else if (cut < 8196) {
+                expect(magicAt(rig.machine)).toBe(0);
+                expect(atCut.slice(0, SA0_LENGTH)).not.toEqual(extractSa0(cslImage!, 'master'));
+                // A cut after erase is a demonstrated unrecoverable window, not a pass
+                // for automatic recovery. Neither reset nor the host repairs these bytes.
+            } else {
+                expect(atCut.slice(0, SA0_LENGTH)).toEqual(extractSa0(cslImage!, 'master'));
+                expect(magicAt(rig.machine)).toBe(0);
+                expect([0x00ff, 0x000f]).toContain((atCut[0x4808]! << 8) | atCut[0x4809]!);
+            }
+        });
+
+    maybe('actually stops servicing the watchdog after success; reset retains the new SA0', () => {
+        const rig = stagedRig();
+        expect(run(rig)).toBe('done');
+        expect(rig.machine.watchdogFired).toBe(false);
+        rig.cpu.run(() => rig.machine.watchdogFired, 1000);
+        const reboot = new Machine(rig.machine.flash.array.slice());
+        expect(reboot.flash.array.slice(0, SA0_LENGTH)).toEqual(extractSa0(cslImage!, 'master'));
+        expect(magicAt(reboot)).toBe(0);
+        expect(reboot.readWord(4) * 65536 + reboot.readWord(6)).toBe(0x200);
+        // Full real-AIF application/peripheral boot is tracked by resetHandler.test.ts.
+    });
+    maybe.each([0x9100, 0xa200, 0xcfe8, 0xcfff, 0xd000, 0xd002])(
+        'refuses corruption at CPU 0x%s before the first SA0 erase', address => {
+            const rig = stagedRig();
+            const before = rig.machine.flash.array.slice(0, SA0_LENGTH);
+            rig.machine.flash.array[address]! ^= 1;
+            expect(run(rig)).toBe('giveup');
+            expect(rig.erasedSa0).toBe(false);
+            expect(rig.machine.flash.array.slice(0, SA0_LENGTH)).toEqual(before);
+            expect(magicAt(rig.machine)).toBe(0);
+        });
+
+    maybe('checks the complete slave image, including the tail outside its BMW CRC', () => {
+        const valid = stagedRig({ processor: 'slave' });
+        expect(run(valid)).toBe('done');
+        expect(valid.machine.flash.array.slice(0, SA0_LENGTH)).toEqual(extractSa0(cslImage!, 'slave'));
+        const damaged = stagedRig({ processor: 'slave' });
+        damaged.machine.flash.array[0xcff0]! ^= 1;
+        expect(run(damaged)).toBe('giveup');
+        expect(damaged.erasedSa0).toBe(false);
+    });
     maybe('refuses to erase when the staged image is blank, and stays bootable', () => {
         const rig = stagedRig({ blankImage: true });
         expect(run(rig)).toBe('giveup');

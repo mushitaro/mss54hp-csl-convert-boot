@@ -27,9 +27,9 @@ describe('the hardware write lock', () => {
         expect(writesAreUnlocked()).toBe(false);
     });
 
-    it('throws a named error that says where the switch is', () => {
+    it('throws a named error and offers practice without unlocking hardware', () => {
         expect(() => assertWriteUnlocked('a test')).toThrow(WriteLockedError);
-        expect(() => assertWriteUnlocked('a test')).toThrow(/writeLock\.ts/);
+        expect(() => assertWriteUnlocked('a test')).toThrow(/Practice mode/);
     });
 
     it('does not name BDM as a precondition of unlocking', () => {
@@ -67,9 +67,9 @@ describe('while arming is locked, nothing irreversible produces bytes', () => {
      * irreversibly is refused above, by its address, which is the only reason letting this one
      * through is safe rather than merely convenient.
      */
-    it('builds the fast-entry recycling telegrams, which the reversible tier needs', () => {
-        expect(buildRecyclingTelegram(0x424151)[0]).toBe(0x07);
-        expect(buildRecyclingTelegram(0x424152)[0]).toBe(0x07);
+    it('locks the FAST ENTRY control telegrams too', () => {
+        expect(() => buildRecyclingTelegram(0x424151)).toThrow(WriteLockedError);
+        expect(() => buildRecyclingTelegram(0x424152)).toThrow(WriteLockedError);
     });
 });
 
@@ -159,8 +159,8 @@ describe('the two gates, and which one is the safety property', () => {
         // Identifiers sector, is NOT stopped here. It reaches the transport and then fails for
         // want of an answer, which is a transport problem and not a lock.
         const failure = await link.transceive(new Uint8Array([0x07, 0x06, 0, 0, 0, 0])).catch((e) => e);
-        expect(String(failure)).not.toMatch(/writes are locked/);
-        expect(sent.length, 'the reversible telegram went out').toBeGreaterThan(0);
+        expect(String(failure)).toMatch(/writes are locked/);
+        expect(sent).toEqual([]);
     });
 
     it('lets a simulated transport through - which is what makes practice possible', async () => {

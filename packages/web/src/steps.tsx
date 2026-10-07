@@ -929,8 +929,8 @@ export function RunStep(
 
     if (awaitingPowerCycle) {
         return (
-            <Card title={c.powerCycleTitle} body={c.powerCycleBody}>
-                <Warning title={c.reviewPointOfNoReturn}>{c.powerCycleNoCancel}</Warning>
+            <Card title={c.powerCycleTitle} body={stage?.kind === 'program' ? c.programPowerCycleBody : c.powerCycleBody}>
+                {stage?.kind !== 'program' && <Warning title={c.reviewPointOfNoReturn}>{c.powerCycleNoCancel}</Warning>}
             </Card>
         );
     }

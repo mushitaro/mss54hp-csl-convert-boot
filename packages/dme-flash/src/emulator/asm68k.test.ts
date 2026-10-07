@@ -54,6 +54,12 @@ out:    rts
 `;
 
 describe('the assembler, checked against BMW machine code', () => {
+    it('encodes immediate logical shifts using the CPU32 register shift format', () => {
+        expect(hex(assemble('lsr.w #1,d0\nlsr.l #8,d0').bytes)).toBe('e2 48 e0 88');
+    });
+    maybe('matches the LSR.L #8,D0 instruction at BMW master 0x2874', () => {
+        expect(assemble('lsr.l #8,d0').bytes).toEqual(firmware!.slice(0x2874, 0x2876));
+    });
     maybe("reproduces flash_erase_sector byte for byte", () => {
         const expected = firmware!.subarray(0x35da, 0x35da + 0x62);
         const { bytes } = assemble(BMW_ERASE_STUB);

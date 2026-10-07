@@ -82,7 +82,7 @@ async function flash(windowKinds: readonly WindowKind[], options: FlashHooks = {
 describe('writing the CSL program and calibration', () => {
     it('lands every byte of all four windows on the ECU', async () => {
         const { ecu, image, plan } = await flash(['program', 'calibration']);
-        expect(plan.eraseCount).toBe(4);
+        expect(plan.eraseCount).toBe(2);
         for (const window of IMAGE_WINDOWS) {
             for (let i = 0; i < window.length; i++) {
                 const at = window.imageOffset + i;
@@ -100,12 +100,13 @@ describe('writing the CSL program and calibration', () => {
         expect(phases[0]).toBe('login');
     });
 
-    it('touches nothing outside the sectors it erases', async () => {
+    it('changes only selected sectors and the exact resident counter history', async () => {
         // The ERASED ranges, not the written windows. The program erase clears the whole 448 KiB
         // the firmware addresses, while an SP-DATEN image only carries 256 KiB of it - so the tail
         // is blanked and never written back. That is not a bug; it is what the sector map says, and
         // the next test is the evidence that it costs nothing.
         const before = practiceEcuImage();
+        for (const base of [0, 0x80000]) before.fill(0, base + 0x4808, base + 0x4810);
         const { ecu } = await flash(['program', 'calibration']);
         const erased = erasedRanges(['program', 'calibration']);
         const wasErased = (at: number): boolean => erased.some((r) => at >= r.start && at < r.end);
@@ -124,8 +125,9 @@ describe('writing the CSL program and calibration', () => {
         }
     });
 
-    it('leaves the bootloader and the service block alone', async () => {
+    it('preserves protected bytes except the four resident counter transitions', async () => {
         const before = practiceEcuImage();
+        for (const base of [0, 0x80000]) before.fill(0, base + 0x4808, base + 0x4810);
         const { ecu } = await flash(['program', 'calibration']);
         for (let at = 0; at < FULL_IMAGE_LENGTH; at++) {
             if (!isProtectedImageOffset(at)) continue;
@@ -137,7 +139,7 @@ describe('writing the CSL program and calibration', () => {
         // The reflash-only case: a calibration change must not cost the program area.
         const before = practiceEcuImage();
         const { ecu, plan } = await flash(['calibration']);
-        expect(plan.eraseCount).toBe(2);
+        expect(plan.eraseCount).toBe(1);
         const program = IMAGE_WINDOWS.filter((w) => w.kind === 'program');
         for (const window of program) {
             for (let i = 0; i < window.length; i++) {

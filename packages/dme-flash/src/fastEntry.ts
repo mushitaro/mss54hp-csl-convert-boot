@@ -452,14 +452,17 @@ export function buildFastEntryWriteTelegram(
     if (bytes.length === 0 || bytes.length > WRITE_CHUNK_MAX) {
         throw new Error(`fast-entry write of ${bytes.length} bytes is outside 1..${WRITE_CHUNK_MAX}`);
     }
+    if (!Number.isSafeInteger(imageAddress) || imageAddress % 2 !== 0 || bytes.length % 2 !== 0) {
+        throw new Error('fast-entry writes require an integer, even address and even length');
+    }
     const address = toDs2Address(processor, imageAddress);
     toDs2Address(processor, imageAddress + bytes.length - 1); // throws if the run leaves the sector
-    return new Uint8Array([Command.ProgramControl, Segment.Write, ...addressBytes(address), ...bytes]);
+    return new Uint8Array([Command.ProgramControl, Segment.Write, ...addressBytes(address), bytes.length, ...bytes]);
 }
 
 /** 24-bit big-endian, as every DS2 address telegram carries it. */
 function addressBytes(ds2Address: number): [number, number, number] {
-    if (ds2Address < 0 || ds2Address > 0xffffff) {
+    if (!Number.isSafeInteger(ds2Address) || ds2Address < 0 || ds2Address > 0xffffff) {
         throw new Error(`DS2 address 0x${ds2Address.toString(16)} does not fit in 24 bits`);
     }
     return [(ds2Address >>> 16) & 0xff, (ds2Address >>> 8) & 0xff, ds2Address & 0xff];
@@ -473,6 +476,9 @@ function addressBytes(ds2Address: number): [number, number, number] {
  * address; the extra byte is read live along with the rest, so re-writing it is a no-op.
  */
 export function chunkSpan(span: Span, chunk = WRITE_CHUNK_MAX): readonly { start: number; length: number }[] {
+    if (!Number.isSafeInteger(chunk) || chunk <= 0 || chunk > WRITE_CHUNK_MAX || chunk % 2 !== 0) {
+        throw new Error('span chunk size must be positive, even and within the write cap');
+    }
     const start = span.start & 1 ? span.start - 1 : span.start;
     const end = span.start + span.length;
     const total = end - start;

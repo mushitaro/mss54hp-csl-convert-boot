@@ -35,10 +35,10 @@ import { WRITE_CHUNK_MAX } from './regionMap';
 import { isProtectedImageOffset, type Processor } from './imageLayout';
 import {
     STAGED_SECTOR_LENGTH, STAGING_DS2_ADDRESS, MAGIC_OFFSET,
-    stagedWriteOrder, sectorIsArmed, carriesNoBootloaderImage,
-    type StagedSector, type LoaderPurpose,
+    stagedWriteOrder, sectorIsArmed, carriesNoBootloaderImage, stagedImageCrcValid,
+    BOOTLOADER_IMAGE_OFFSET, FORBIDDEN_FIRST_BYTE, type StagedSector, type LoaderPurpose,
 } from './blLoader';
-import { SA0_LENGTH } from './bootloaderImage';
+import { SA0_LENGTH, verifyBootloaderCrc } from './bootloaderImage';
 import { eraseNibbleAllowed, writeNibbleAllowed, nibbleOf, BOOTLOADER_NIBBLES } from './telegrams';
 import { DEFAULT_ACCESS_LEVEL } from './seedKey';
 
@@ -105,14 +105,14 @@ export function planBlReplace(sector: StagedSector, chunkSize = WRITE_CHUNK_MAX)
         },
         {
             kind: 'read-before',
-            note: 'capture all 512 KiB twice with the linear read segment and compare;'
-                + ' this is the only backup that includes SA0, SA1 and SA2',
+            note: 'verify live SA0 compatibility and snapshot the peer calibration twice;'
+                + ' the full recovery backup must already have been saved',
             ds2Address: 0,
             reversible: true,
         },
         {
             kind: 'erase-calibration',
-            note: 'segment 0x06 at the calibration window - the ordinary, real-car-proven erase',
+            note: 'erase the data session; restore and verify the peer calibration before staging this CPU',
             ds2Address,
             reversible: true,
         },
@@ -203,11 +203,38 @@ export function planProbe(sector: StagedSector, chunkSize = WRITE_CHUNK_MAX): Bl
 export function validateBlReplace(plan: BlPlan): BlViolation[] {
     const violations: BlViolation[] = [];
     const expectedAddress = STAGING_DS2_ADDRESS[plan.processor];
+    if (expectedAddress === undefined || plan.ds2Address !== expectedAddress
+        || !['probe', 'replace'].includes(plan.purpose)) {
+        return [{ step: -1, message: 'invalid processor, purpose or staging base address' }];
+    }
+
+    // Accept one exact phase order; labels alone cannot prove that verification covered the
+    // bytes subsequently executed. In particular, no erase or non-arming write may follow it.
+    const writes = plan.steps.filter(s => s.kind === 'write-staged');
+    const expectedKinds: BlStepKind[] = [
+        'login', 'read-before', 'erase-calibration',
+        ...writes.slice(0, -1).map((): BlStepKind => 'write-staged'),
+        'verify-staged', 'write-staged', 'arm', 'power-cycle', 'read-after', 'restore-calibration',
+    ];
+    const armingIndex = 3 + writes.length;
+    if (plan.steps.length !== expectedKinds.length
+        || plan.steps.some((s, i) => s.kind !== expectedKinds[i])) {
+        violations.push({ step: -1, message: 'invalid phase order: stage, verify, arm, power-cycle, read-after are required' });
+    }
+    if (plan.pointOfNoReturn !== armingIndex) {
+        violations.push({ step: -1, message: 'point of no return must identify the final arming write' });
+    }
+    plan.steps.forEach((s, i) => {
+        const shouldArm = i === armingIndex || i === armingIndex + 1;
+        if (!!s.armsTheEcu !== shouldArm || s.reversible !== (i < armingIndex)) {
+            violations.push({ step: i, message: 'arming/reversibility flags do not match the actual phase' });
+        }
+    });
 
     let armCount = 0;
     let verifiedBeforeArming = false;
     let writtenBytes = 0;
-    let lastWriteEnd: number | undefined;
+    let lastWriteEnd = expectedAddress;
     // Reassembled from the write steps, so the purpose is checked against the bytes that would
     // actually go out rather than against the label on the plan.
     const sector = new Uint8Array(STAGED_SECTOR_LENGTH).fill(0xff);
@@ -230,7 +257,7 @@ export function validateBlReplace(plan: BlPlan): BlViolation[] {
         if (step.kind === 'write-staged') {
             const address = step.ds2Address;
             const data = step.data;
-            if (address === undefined || data === undefined) {
+            if (!Number.isSafeInteger(address) || data === undefined || address === undefined) {
                 add('a write step must carry both an address and data');
                 return;
             }
@@ -249,7 +276,7 @@ export function validateBlReplace(plan: BlPlan): BlViolation[] {
             }
             if (data.length % 2 !== 0) add(`write length ${data.length} must be even`);
             if (address % 2 !== 0) add(`write address 0x${address.toString(16)} must be even`);
-            if (lastWriteEnd !== undefined && address !== lastWriteEnd) {
+            if (address !== lastWriteEnd) {
                 add(`write at 0x${address.toString(16)} is not contiguous with the previous chunk`);
             }
             const offset = address - expectedAddress;
@@ -297,6 +324,19 @@ export function validateBlReplace(plan: BlPlan): BlViolation[] {
      * installed.
      */
     if (writtenBytes === STAGED_SECTOR_LENGTH) {
+        if (!sectorIsArmed(sector)) {
+            violations.push({ step: -1, message: 'staged sector does not contain the exact arming magic' });
+        }
+        if (sector[0] === FORBIDDEN_FIRST_BYTE[plan.processor] || sector[0] === 0xff) {
+            violations.push({ step: -1, message: 'staged loader entry is absent or refused by the reset handler' });
+        }
+        if (plan.purpose === 'replace' && !verifyBootloaderCrc(
+            sector.slice(BOOTLOADER_IMAGE_OFFSET, BOOTLOADER_IMAGE_OFFSET + SA0_LENGTH), plan.processor).valid) {
+            violations.push({ step: -1, message: 'staged bootloader CRC is invalid' });
+        }
+        if (plan.purpose === 'replace' && !stagedImageCrcValid(sector)) {
+            violations.push({ step: -1, message: 'full staged image CRC or complement is invalid' });
+        }
         const carriesImage = !carriesNoBootloaderImage(sector);
         if (plan.purpose === 'probe' && carriesImage) {
             violations.push({
