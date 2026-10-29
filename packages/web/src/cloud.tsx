@@ -1,10 +1,14 @@
 /**
- * The SYNC panel: what this owner has saved, which account it is saved to, and the way back in
- * when the sign-in has lapsed. Preview build only - App renders it behind `canSync()`.
+ * The SYNC panel: what this owner has saved, and which account it is saved to. Preview build only -
+ * App renders it behind `canSync()`.
+ *
+ * A lapsed sign-in is not said here. It stops updates as well as SYNC, so it is the app's to say -
+ * in the notice slot, with SIGN IN under it (reauth.ts) - and saying it here too would be the same
+ * sentence and the same control twice on one screen.
  *
  * It sits on the LINK screen and nowhere else. That is the one screen where nothing is connected
- * and nothing is running, which is exactly when leaving the page (to sign in again) or opening a
- * file costs nothing, and it keeps the wizard's other screens about the car.
+ * and nothing is running, which is exactly when opening a file costs nothing, and it keeps the
+ * wizard's other screens about the car.
  *
  * Built from the same atoms as the steps: a `bg-slate-900` block, tiny uppercase labels, mono for
  * everything that came from a machine (times, idents, the account), neutral grey for controls
@@ -22,10 +26,6 @@ import { lang, t } from './copy';
 export interface CloudPanelProps {
     /** The account label from the gate (`#XXXX`), or null while it is not known. */
     account: string | null;
-    /** The gate says this browser's session has lapsed. */
-    expired: boolean;
-    /** Offered only when it is safe to leave the page; null otherwise. */
-    onReauth: (() => void) | null;
     runs: readonly CloudRun[] | null;
     errors: readonly CloudDiagnostic[] | null;
     loading: boolean;
@@ -66,13 +66,6 @@ export function CloudPanel(props: CloudPanelProps): ReactNode {
                     </span>
                 </div>
                 <p className="mt-2 text-[10px] leading-[1.5] text-slate-500">{c.syncBody}</p>
-
-                {props.expired && (
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                        <p className="text-[10px] leading-[1.5] text-amber-400">{c.syncExpired}</p>
-                        {props.onReauth && <RowAction label={c.syncReauth} onClick={props.onReauth} />}
-                    </div>
-                )}
 
                 <Section label={c.syncRuns}>
                     {runs === null

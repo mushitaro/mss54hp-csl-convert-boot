@@ -27,7 +27,10 @@ export type GateState = 'active' | 'expired' | 'unknown';
  */
 export async function gateStatus(): Promise<{ state: GateState; label: string | null }> {
   try {
-    const r = await fetch('/_gate/status', { credentials: 'same-origin', cache: 'no-store' });
+    // `t`: this device's clock. The gate extends the session cookie here, once
+    // a day, and only when the clock is right — re-stamped under a clock that
+    // is years out, the cookie would die when the clock is put right (gate.ts).
+    const r = await fetch(`/_gate/status?t=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' });
     if (!r.ok) return { state: 'unknown', label: null };
     const d = (await r.json()) as { state?: GateState; account_label?: string };
     const state = d.state === 'active' || d.state === 'expired' ? d.state : 'unknown';
@@ -67,7 +70,25 @@ function lastAccount(): string | null {
  */
 export function reauthHref(returnPath?: string): string {
   const here = returnPath ?? (typeof location === 'undefined' ? '/' : location.pathname + location.search);
-  return '/_gate/start?return=' + encodeURIComponent(here);
+  // `t` saves the gate its clock page when the clock is right; without it, or
+  // with a clock that is out, the gate asks the page itself and waits.
+  return '/_gate/start?return=' + encodeURIComponent(here) + '&t=' + Date.now();
+}
+
+/**
+ * Whether this device's clock agrees with the server that answered `res` (its
+ * Date header) to within a day — the gate's own tolerance.
+ *
+ * For an app deciding whether to go through the gate again by itself after a
+ * 401: with the clock out, the gate would only show its page that waits for the
+ * clock, and the app would be gone from the screen until the device put its
+ * clock right. A head unit fresh from boot reads 2006 for a while. Better to
+ * stay in the cached app, say the sign-in has lapsed, and try once the clock
+ * is right.
+ */
+export function clockAgrees(res: Response): boolean {
+  const server = Date.parse(res.headers.get('date') ?? '');
+  return Number.isFinite(server) && Math.abs(Date.now() - server) <= 86_400_000;
 }
 
 export interface ApiResult<T> {

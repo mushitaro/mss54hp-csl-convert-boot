@@ -24,7 +24,8 @@
  * quietly run March's rules. So a connected phone always gets the current build, and the cache is
  * the fallback for when the network cannot give it: no answer within NETWORK_TIMEOUT_MS, a redirect
  * (the gate sending an expired session to sign in), or anything but a 2xx. An owner whose session
- * lapsed in a garage still gets the app they installed; the app itself offers to sign in again.
+ * lapsed in a garage still gets the app they installed; the app itself notices, says so, and goes
+ * through the gate again - by itself when nothing would be lost (src/reauth.ts).
  *
  * ## Hashed assets are cache-first, because they cannot go stale
  *

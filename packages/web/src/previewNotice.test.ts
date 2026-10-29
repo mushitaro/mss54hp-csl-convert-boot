@@ -30,7 +30,7 @@ beforeEach(() => {
     // A server that takes everything, behind a gate that knows this browser as owner-a.
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
         seen.push({ method: init?.method ?? 'GET', url });
-        const body = url === '/_gate/status' ? { state: 'active', account_label: 'owner-a' }
+        const body = url.startsWith('/_gate/status?') ? { state: 'active', account_label: 'owner-a' }
             : url === '/api/runs' ? { id: 'r1', imageBytes: 1, logBytes: 1 }
                 : { ok: true };
         return new Response(JSON.stringify(body), { status: 200 });
@@ -276,7 +276,7 @@ describe('the preview, once the notice is confirmed', () => {
         app.flushDiagnostics();
         await vi.waitFor(() => expect(idb.rows('boot-outbox')).toHaveLength(0));
         expect(seen).toEqual([
-            { method: 'GET', url: '/_gate/status' },
+            { method: 'GET', url: expect.stringMatching(/^\/_gate\/status\?t=\d+$/) },
             { method: 'POST', url: '/api/diagnostics' },
         ]);
 

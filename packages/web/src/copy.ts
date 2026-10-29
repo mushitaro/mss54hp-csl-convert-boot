@@ -422,7 +422,12 @@ const JA = {
     syncEmpty: 'まだありません。',
     syncLoading: '読み込んでいます…',
     syncLoadFailed: '一覧を読めませんでした。',
-    syncExpired: 'この端末のサインインが切れています。保存と一覧にはサインインし直してください。',
+    // A lapsed sign-in, said in the notice slot rather than in this panel: it stops updates as
+    // well as SYNC (reauth.ts). UPLOAD is named because it is what the owner would press and find
+    // refused; saving the log writes to the phone and still works. The clock line promises only
+    // what the app does - ask again every minute, and go once the clock agrees.
+    signInLapsed: 'この端末のサインインが切れています。サインインし直すまで、更新が届かず、UPLOAD もできません。',
+    signInClockOut: 'この端末のサインインが切れていて、端末の時計もずれています。時計が合えば、自動でサインインし直します。',
     syncReauth: 'SIGN IN',
     syncReauthConfirm: 'まだ保存していないログがあります。サインインのためにこの画面を離れると消えます。\n\n続けますか？',
     syncDeleteRun: (when: string) => `${when} のイメージとログをクラウドから削除します。元に戻せません。\n\n削除しますか？`,
@@ -753,7 +758,8 @@ const EN: typeof JA = {
     syncEmpty: 'Nothing yet.',
     syncLoading: 'Loading…',
     syncLoadFailed: 'Could not load the list.',
-    syncExpired: 'The sign-in on this device has lapsed. Sign in again to save and to see this list.',
+    signInLapsed: 'The sign-in on this device has lapsed. Until you sign in again, no updates arrive and UPLOAD does not work.',
+    signInClockOut: 'The sign-in on this device has lapsed, and the device clock is out. Once the clock is right, it signs in again by itself.',
     syncReauth: 'SIGN IN',
     syncReauthConfirm: 'There is a log you have not saved. Leaving this screen to sign in will lose it.\n\nContinue?',
     syncDeleteRun: (when) => `Delete the image and log from ${when} from the cloud? This cannot be undone.`,

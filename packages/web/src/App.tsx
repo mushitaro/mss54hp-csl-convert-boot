@@ -60,6 +60,7 @@ import { CloudPanel, PreviewNotice, PrivacyHeaderLink, when } from './cloud';
 import { CreditsButton, CreditsDialog } from './credits';
 import { acknowledgeNotice, noticeAcknowledged, noticeRequired } from './previewNotice';
 import { BUILD_ID, applyUpdate, isInstalled, setLinkBusy } from './pwa';
+import { CLOCK_RETRY_MS, claimAutoReauth, probeGate, reauthMove } from './reauth';
 import { bundledNames } from '../bundled-files.mjs';
 
 
@@ -173,6 +174,11 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * that cannot load.
      */
     const [gate, setGate] = useState<{ state: GateState; label: string | null }>({ state: 'unknown', label: null });
+    /**
+     * Whether this device's clock agrees with the gate's, read off the gate's last 401 (reauth.ts).
+     * Null until one has been read. Only meaningful while `gate.state` is `expired`.
+     */
+    const [gateClock, setGateClock] = useState<boolean | null>(null);
     const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
     /** The owner's saved runs and error records, as last listed. Null until a listing succeeds. */
     const [cloud, setCloud] = useState<{
@@ -1322,6 +1328,31 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         };
     }, [preview]);
 
+    /**
+     * A lapse, however it was found - the gate's status, or a 401 from SYNC or UPLOAD - is asked of
+     * the gate once more, the way the update check asks (`probeGate`), for what the device's clock
+     * says. Let in after all - signed in again from another tab, say - the status is asked again.
+     */
+    const askGateClock = useCallback(() => {
+        void probeGate().then((probe) => {
+            if (!probe) return;
+            if (probe.lapsed) setGateClock(probe.clockOk);
+            else void currentGate().then(setGate);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (preview && gate.state === 'expired' && online) askGateClock();
+    }, [preview, gate.state, online, askGateClock]);
+
+    // While the clock is out, again every minute: a head unit sets its own clock a while after it
+    // boots, and the sign-in goes by itself once it has.
+    useEffect(() => {
+        if (!preview || gate.state !== 'expired' || !online || gateClock !== false) return;
+        const timer = window.setInterval(askGateClock, CLOCK_RETRY_MS);
+        return () => window.clearInterval(timer);
+    }, [preview, gate.state, online, gateClock, askGateClock]);
+
     /** The panel is on the first screen, with nothing connected - see cloud.tsx for why there. */
     const showCloud = preview && step === 'LINK' && !connected;
 
@@ -1375,14 +1406,28 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
      * Sign in again: a same-tab trip through m3 and back to this page.
      *
      * Offered only when leaving the page can cost nothing on the car - online, no link, nothing
-     * running - and even then a log that has not been saved is named before it is lost.
+     * running - and even then a log that has not been saved is named before it is lost. Taken by
+     * itself only when there is no such log either, and the device's clock is right (reauth.ts).
      */
-    const reauthOffered = preview && gate.state === 'expired' && online && !connected && busy === null;
+    const unsaved = backup !== null || events.length > 1;
+    const signIn = reauthMove({
+        preview,
+        lapsed: gate.state === 'expired',
+        clockOk: gateClock,
+        online,
+        connected,
+        busy: busy !== null,
+        unsaved,
+    });
     const reauth = useCallback(() => {
-        const unsaved = backup !== null || events.length > 1;
         if (unsaved && !window.confirm(c.syncReauthConfirm)) return;
         window.location.assign(reauthHref());
-    }, [backup, events, c]);
+    }, [unsaved, c]);
+    // Decided on the state this render committed. CONNECT sets `busy` before the device picker
+    // opens, so no link can be on its way while this goes.
+    useEffect(() => {
+        if (signIn.auto && claimAutoReauth()) window.location.assign(reauthHref());
+    }, [signIn.auto]);
 
     // --- the hub, derived --------------------------------------------------------------------
     const hub: HubConfig = useMemo((): HubConfig => {
@@ -1486,10 +1531,21 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
             : practice ? 'practice' : connected ? 'ok' : 'disconnected';
 
     /**
+     * A lapsed sign-in, as the slot says it (reauth.ts). Not while something is running: the slot
+     * is the run's then, and nothing about the sign-in can be done before it ends.
+     */
+    const lapseLine: { kind: NoticeKind; text: string } | null = signIn.notice === null || busy !== null ? null
+        : { kind: 'warn', text: signIn.notice === 'clock' ? c.signInClockOut : c.signInLapsed };
+    const hubLine: { kind: NoticeKind; text: string } | null = hubReason ? { kind: 'info', text: hubReason } : null;
+
+    /**
      * One line in the reserved slot, chosen by priority rather than stacked.
      *
      * An error the operator has not dismissed outranks the standing reason a control is inert,
-     * which outranks a background fact about the build. The reserved slot scrolls long messages.
+     * which outranks a background fact about the build - a lapsed sign-in, then a waiting update.
+     * Except that a lapsed sign-in goes ahead of the reason while SIGN IN is under it: nothing is
+     * connected then, so the screen is LINK, whose only reason is a device that cannot connect at
+     * all, and the LINK card already says that at length. The reserved slot scrolls long messages.
      */
     const slot: { kind: NoticeKind; text: string } | null =
         // Outranks even an error, because it casts doubt on what the error - or the success - is
@@ -1497,8 +1553,8 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
         // moment they come back, and what they see then is a progress bar crawling for no visible
         // reason. Gating it on the run being over would hide it exactly when it explains something.
         wentHidden ? { kind: 'error', text: c.wentHidden }
-            : notice ?? (hubReason ? { kind: 'info', text: hubReason }
-                : updateWaiting ? { kind: 'warn', text: c.updateWaiting } : null);
+            : notice ?? (signIn.offer ? lapseLine ?? hubLine : hubLine ?? lapseLine)
+                ?? (updateWaiting ? { kind: 'warn', text: c.updateWaiting } : null);
 
     const reviewFacts: ReviewFacts | null = useMemo(() => {
         // `speed` is required by the program stage and does not exist for a bootloader one, so it
@@ -1688,8 +1744,6 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                 {showCloud && (
                     <CloudPanel
                         account={gate.label}
-                        expired={gate.state === 'expired'}
-                        onReauth={reauthOffered ? reauth : null}
                         runs={cloud.runs}
                         errors={cloud.errors}
                         loading={cloud.loading}
@@ -1859,6 +1913,12 @@ export default function App({ onUpdateAvailable }: AppProps = {}) {
                         rule needs, and a reload with a cable in would drop the link. */}
                     {!busy && !connected && updateWaiting && (
                         <SubAction label={c.updateApply} onClick={() => void applyUpdate()} />
+                    )}
+                    {/* The same guarantee as UPDATE, since it leaves the page; `offer` also needs a
+                        network to go through. The one way to sign in again by hand - the slot
+                        above says why it is here. */}
+                    {!busy && !connected && signIn.offer && (
+                        <SubAction label={c.syncReauth} onClick={reauth} />
                     )}
                 </SubActions>
             </div>

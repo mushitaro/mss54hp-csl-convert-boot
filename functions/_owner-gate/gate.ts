@@ -10,10 +10,35 @@
 // and its icons, which browsers fetch without cookies, and the gate's own
 // /_gate/* routes.
 //
-//   first visit ─→ 302 m3 /api/access/authorize (state + PKCE, sealed tx cookie)
-//   m3 ─→ /_gate/callback?code&state ─→ POST m3 /api/access/token (client secret
-//        + verifier) ─→ __Host-owner cookie ─→ 302 back to where they were going
+//   first visit ─→ 302 /_gate/start ─→ clock page (the device's clock checked,
+//        below) ─→ /_gate/start?t ─→ 302 m3 /api/access/authorize (state +
+//        PKCE, sealed tx cookie)
+//   m3 ─→ /_gate/callback?code&state ─→ clock page ─→ /_gate/callback?…&t ─→
+//        POST m3 /api/access/token (client secret + verifier) ─→ __Host-owner
+//        cookie ─→ 302 back to where they were going
 //   every request ─→ POST m3 /api/access/introspect (≤60 s cache) ─→ next()
+//
+// ## The device's clock
+//
+// A browser works out a cookie's expiry from the device's own clock (Max-Age is
+// added to it; Expires is shifted onto it by the Date header) and caps it at 400
+// days. A cookie set while the clock is years behind therefore expires the
+// moment the clock is put right, and nothing the server sends can prevent it.
+// The car's head unit boots at 2006-12-18 every time and GPS can set it to
+// 2007-03-15; on 2026-10-29 every sign-in it held vanished that way, and its
+// WORKS builds went on running the cached build in silence. The owner does not
+// set that clock — the head unit does.
+//
+// So no cookie of this gate's is set or extended without the device's clock
+// in hand and right to within a day (`t`, ms since the epoch, put on the URL by
+// the clock page's script or by the app). While it is out, the clock page waits
+// and carries on by itself when the device puts its clock right; after two
+// minutes it offers to go on anyway (`anyway=1`), for a device whose clock never
+// comes right. m3 does the same for its own cookie (tsunagi-m3
+// functions/_lib/clock.ts), and is passed `client_time` so that the trip
+// through it extends its cookie too. The daily extension moved from "any page
+// load" — which, on a head unit fresh from boot, would re-stamp the cookie in
+// 2006 — to /_gate/status?t, which the apps call.
 //
 // The rules it keeps, each for a reason written where it is kept:
 //   - non-canonical hosts (deployment hashes, branch aliases) answer 404;
@@ -83,6 +108,12 @@ const SESSION_MAX_AGE = 180 * 86_400;
 const TX_MAX_AGE = 600;
 const INTROSPECT_TTL_MS = 60_000;
 const MAX_TX = 3;
+/** How far the device's clock may be from this server's before no cookie is set. */
+const CLOCK_TOLERANCE_MS = 86_400_000;
+/** How long the clock page waits before it offers to go on with the clock as it is. */
+const CLOCK_ANYWAY_AFTER_MS = 120_000;
+/** Round trips to m3 started again by the gate itself, per transaction chain. */
+const MAX_RESTARTS = 1;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -139,6 +170,8 @@ interface Tx {
   verifier: string;
   ret: string;
   iat: number;
+  /** How many times the gate has already restarted this round trip by itself. */
+  n?: number;
 }
 
 async function seal(secret: string, name: string, host: string, tx: Tx): Promise<string> {
@@ -191,10 +224,17 @@ function redirect(location: string, cookies: string[] = []): Response {
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /** A plain page from the gate itself. Japanese or English by Accept-Language. */
-function page(req: Request, status: number, ja: { title: string; body: string[] }, en: { title: string; body: string[] }, cookies: string[] = []): Response {
+function page(
+  req: Request,
+  status: number,
+  ja: { title: string; body: string[] },
+  en: { title: string; body: string[] },
+  cookies: string[] = [],
+  script = ''
+): Response {
   const isJa = (req.headers.get('accept-language') ?? 'ja').toLowerCase().startsWith('ja');
   const t = isJa ? ja : en;
-  const html = `<!doctype html><html lang="${isJa ? 'ja' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(t.title)}</title><style>body{margin:0;background:#000;color:#e8e6e3;font:15px/1.8 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:560px;margin:0 auto;padding:64px 20px}h1{font-size:18px;letter-spacing:.04em;margin:0 0 20px}p{margin:0 0 14px}a{color:#e8e6e3}</style></head><body><main><h1>${esc(t.title)}</h1>${t.body.map((p) => `<p>${p}</p>`).join('')}</main></body></html>`;
+  const html = `<!doctype html><html lang="${isJa ? 'ja' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(t.title)}</title><style>body{margin:0;background:#000;color:#e8e6e3;font:15px/1.8 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:560px;margin:0 auto;padding:64px 20px}h1{font-size:18px;letter-spacing:.04em;margin:0 0 20px}p{margin:0 0 14px}a,button{color:#e8e6e3}button{font:inherit;background:none;border:0;padding:0;text-decoration:underline;cursor:pointer}[hidden]{display:none}</style></head><body><main><h1>${esc(t.title)}</h1>${t.body.map((p) => `<p>${p}</p>`).join('')}</main>${script ? `<script>${script}</script>` : ''}</body></html>`;
   const h = new Headers({ ...NO_STORE, 'content-type': 'text/html; charset=utf-8', 'referrer-policy': 'no-referrer' });
   for (const c of cookies) h.append('set-cookie', c);
   return new Response(html, { status, headers: h });
@@ -244,12 +284,31 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
     const path = url.pathname;
 
     // ── the gate's own routes ──────────────────────────────────────────────
-    if (path === '/_gate/start') return start(request, secret, url.host, origin, m3Browser, callback, safeReturn(url.searchParams.get('return')));
-    if (path === '/_gate/callback') return finish(ctx, secret, url, m3Server, callback);
+    if (path === '/_gate/start') {
+      // Nothing is set until the device's clock is known to be right (see the header).
+      const clock = clockOf(url);
+      if (!clock.go) return clockPage(request, url);
+      return start(request, secret, url.host, m3Browser, callback, safeReturn(url.searchParams.get('return')), 0, clock.ok ? clock.t : null);
+    }
+    if (path === '/_gate/callback') return finish(ctx, secret, url, m3Browser, m3Server, callback);
     if (path === '/_gate/status') {
       const s = await resolve(ctx, secret, local, m3Server);
       if (s === 'error') return jsonRes({ state: 'unknown' }, 200);
-      return jsonRes(s ? { state: 'active', account_label: s.owner.label } : { state: 'expired' }, 200);
+      if (!s) return jsonRes({ state: 'expired' }, 200);
+      // The daily extension. Here rather than on page loads because only here
+      // does the request say what time the device thinks it is (the apps add
+      // `t`): re-stamped under a clock that is years out, the cookie would die
+      // the moment the clock is put right.
+      const cookies = readCookies(request);
+      const token = cookies.get(SESSION_COOKIE);
+      const last = Number(cookies.get(REFRESH_COOKIE) ?? 0);
+      const extend =
+        token && clockOf(url).ok && now() - last > 86_400_000
+          ? [cookie(SESSION_COOKIE, token, SESSION_MAX_AGE), cookie(REFRESH_COOKIE, String(now()), SESSION_MAX_AGE)]
+          : [];
+      const res = jsonRes({ state: 'active', account_label: s.owner.label }, 200);
+      for (const c of extend) res.headers.append('set-cookie', c);
+      return res;
     }
     if (path === '/_gate/denied') return denied(request);
     if (path.startsWith('/_gate/')) return new Response('Not found', { status: 404, headers: NO_STORE });
@@ -261,7 +320,8 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
     const s = await resolve(ctx, secret, local, m3Server);
     if (s === 'error') return jsonRes({ error: 'unavailable' }, 503);
     if (!s) {
-      if (isNavigation(request)) return start(request, secret, url.host, origin, m3Browser, callback, safeReturn(path + url.search));
+      // By way of /_gate/start, whose clock page every way in goes through.
+      if (isNavigation(request)) return redirect(`/_gate/start?return=${encodeURIComponent(safeReturn(path + url.search))}`);
       return jsonRes({ error: 'unauthorized' }, 401);
     }
 
@@ -276,18 +336,64 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
     const res = await ctx.next();
     const out = new Response(res.body, res);
     out.headers.set('cache-control', privateCaching(res, path));
-    // Keep the cookie as long-lived as the session it carries: re-issued on a
-    // page load at most once a day, never on every asset.
-    if (isNavigation(request)) {
-      const cookies = readCookies(request);
-      const last = Number(cookies.get(REFRESH_COOKIE) ?? 0);
-      const token = cookies.get(SESSION_COOKIE);
-      if (token && now() - last > 86_400_000) {
-        out.headers.append('set-cookie', cookie(SESSION_COOKIE, token, SESSION_MAX_AGE));
-        out.headers.append('set-cookie', cookie(REFRESH_COOKIE, String(now()), SESSION_MAX_AGE));
-      }
-    }
+    // No cookie is re-issued here, page load or not: this request does not say
+    // what time the device thinks it is. The daily extension is /_gate/status?t.
     return out;
+  }
+
+  /**
+   * The device's clock as the request states it. `go` — a cookie may be set:
+   * the clock is right, or the owner chose to go on with it as it is.
+   */
+  function clockOf(url: URL): { t: number; ok: boolean; go: boolean } {
+    const raw = url.searchParams.get('t');
+    const t = raw && /^\d{1,15}$/.test(raw) ? Number(raw) : NaN;
+    const ok = Number.isFinite(t) && Math.abs(t - now()) <= CLOCK_TOLERANCE_MS;
+    return { t, ok, go: ok || (Number.isFinite(t) && url.searchParams.get('anyway') === '1') };
+  }
+
+  /**
+   * Find out what time this device thinks it is, and come back with it as `t`.
+   *
+   * Sets nothing and spends nothing, so it can be shown as often as needed: the
+   * script reads the device's clock, compares it with this server's (followed
+   * on the monotonic clock, not on the device clock being waited for), and goes
+   * on by itself the moment the two agree. The page is the gate's own, served
+   * no-store from a /_gate/ route that the service workers never answer.
+   */
+  function clockPage(request: Request, url: URL): Response {
+    const target = new URL(url.toString());
+    target.searchParams.delete('t');
+    target.searchParams.delete('anyway');
+    const conf = JSON.stringify({
+      server: now(),
+      tolerance: CLOCK_TOLERANCE_MS,
+      anywayAfter: CLOCK_ANYWAY_AFTER_MS,
+      target: target.pathname + target.search,
+    }).replace(/</g, '\\u003c');
+    const script = `(function(){var c=${conf},p0=performance.now();function right(){return c.server+(performance.now()-p0)}function ok(){return Math.abs(Date.now()-right())<=c.tolerance}function go(any){var u=new URL(c.target,location.origin);u.searchParams.set('t',String(Date.now()));if(any)u.searchParams.set('anyway','1');location.replace(u.pathname+u.search)}if(ok())return go(false);function ymd(ms){var d=new Date(ms),p=function(n){return(n<10?'0':'')+n};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())}document.getElementById('clock-device').textContent=ymd(Date.now());document.getElementById('clock-right').textContent=ymd(right());document.getElementById('clock-check').hidden=true;document.getElementById('clock-wait').hidden=false;document.getElementById('clock-go').onclick=function(){go(true)};var t0=performance.now(),iv=setInterval(function(){if(ok()){clearInterval(iv);go(false)}else if(performance.now()-t0>=c.anywayAfter){document.getElementById('clock-anyway').hidden=false}},2000)})();`;
+    return page(
+      request,
+      200,
+      {
+        title: config.name,
+        body: [
+          '<span id="clock-check">確認しています…</span><noscript>このページを使うには JavaScript を有効にしてください。</noscript>',
+          '<span id="clock-wait" hidden>この端末の時計が <b id="clock-device"></b> を指しています（正しくは <b id="clock-right"></b>）。時計がずれたまま進めると、時計が直ったときに使えなくなるため、時計が合うのを待っています。合えば、このまま自動で続きます。</span>',
+          '<span id="clock-anyway" hidden>※ 時計が合わないまま進めると、時計が直ったときに、もう一度開き直す必要があります。<br><button id="clock-go" type="button">時計が合わないまま進める →</button></span>',
+        ],
+      },
+      {
+        title: config.name,
+        body: [
+          '<span id="clock-check">Checking…</span><noscript>Please enable JavaScript to use this page.</noscript>',
+          '<span id="clock-wait" hidden>This device&#39;s clock says <b id="clock-device"></b> (it is <b id="clock-right"></b>). Signed in with its clock that far out, this device would stop working the moment the clock is put right, so this is waiting for the clock. It carries on by itself once the clock is right.</span>',
+          '<span id="clock-anyway" hidden>Note: if you go on with the clock as it is, you will need to open it again once the clock is put right.<br><button id="clock-go" type="button">Go on with the clock as it is →</button></span>',
+        ],
+      },
+      [],
+      script
+    );
   }
 
   /** Who is this — from the cookie, through m3, cached for up to a minute. */
@@ -352,29 +458,36 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
     return { owner };
   }
 
-  /** Begin a round trip to m3: a fresh state and verifier, sealed in a cookie of their own. */
+  /**
+   * Begin a round trip to m3: a fresh state and verifier, sealed in a cookie of
+   * their own. Only reached with the device's clock checked (see the header).
+   * `n` counts the restarts the gate has made by itself; `clientTime`, when the
+   * clock is right, goes on to m3 so that the trip extends m3's cookie as well.
+   */
   async function start(
     request: Request,
     secret: string,
     host: string,
-    origin: string,
     m3Browser: string,
     callback: string,
-    ret: string
+    ret: string,
+    n: number,
+    clientTime: number | null,
+    spent: string[] = []
   ): Promise<Response> {
-    const cookies: string[] = [];
+    const cookies: string[] = [...spent];
     // At most MAX_TX transactions in flight per browser: the oldest go first,
     // so repeated launches cannot grow the Cookie header without bound.
     const txs: { name: string; iat: number }[] = [];
     for (const [name, value] of readCookies(request)) {
-      if (!name.startsWith(TX_PREFIX)) continue;
+      if (!name.startsWith(TX_PREFIX) || spent.some((c) => c.startsWith(`${name}=`))) continue;
       const tx = await open(secret, name, host, value);
       txs.push({ name, iat: tx?.iat ?? 0 });
     }
     txs.sort((a, b) => b.iat - a.iat);
     for (const old of txs.slice(MAX_TX - 1)) cookies.push(clear(old.name));
 
-    const tx: Tx = { id: random(6), state: random(32), verifier: random(32), ret, iat: now() };
+    const tx: Tx = { id: random(6), state: random(32), verifier: random(32), ret, iat: now(), n };
     const name = TX_PREFIX + tx.id;
     cookies.push(cookie(name, await seal(secret, name, host, tx), TX_MAX_AGE));
 
@@ -387,21 +500,24 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
       code_challenge_method: 'S256',
       scope: 'owner_preview',
     });
+    if (clientTime !== null) q.set('client_time', String(clientTime));
     return redirect(`${m3Browser}/api/access/authorize?${q}`, cookies);
   }
 
   /** Back from m3: match the state to a sealed transaction, exchange the code, set the session. */
-  async function finish(ctx: GateContext, secret: string, url: URL, m3Server: string, callback: string): Promise<Response> {
+  async function finish(ctx: GateContext, secret: string, url: URL, m3Browser: string, m3Server: string, callback: string): Promise<Response> {
     const { request } = ctx;
     const state = url.searchParams.get('state') ?? '';
     const cookies = readCookies(request);
 
-    let found: { name: string; tx: Tx } | null = null;
+    // The transaction this answers, in date or not: one that has run out is
+    // still where the owner was going, if the gate starts the trip again.
+    let found: { name: string; tx: Tx; fresh: boolean } | null = null;
     for (const [name, value] of cookies) {
       if (!name.startsWith(TX_PREFIX)) continue;
       const tx = await open(secret, name, url.host, value);
-      if (tx && tx.state === state && now() - tx.iat <= TX_MAX_AGE * 1000) {
-        found = { name, tx };
+      if (tx && tx.state === state) {
+        found = { name, tx, fresh: now() - tx.iat <= TX_MAX_AGE * 1000 };
         break;
       }
     }
@@ -409,16 +525,29 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
 
     if (url.searchParams.get('error') === 'access_denied') return redirect('/_gate/denied', spent);
 
-    // No matching transaction: this callback was not started by this browser,
-    // or it is a second load of one that already finished. If a working
-    // session is already here, just go on; otherwise say so — never restart
-    // automatically, which could loop.
-    const code = url.searchParams.get('code') ?? '';
-    if (!found || !/^[A-Za-z0-9_-]{43}$/.test(code)) {
+    // No session cookie until the device's clock is known (see the header). The
+    // clock page sets and spends nothing; it comes back here with `t`.
+    const clock = clockOf(url);
+    if (!clock.go) return clockPage(request, url);
+
+    // When this cannot finish and nobody is signed in here, the gate starts the
+    // trip again by itself — once. The usual reason is the clock page: m3's
+    // code lives a minute, and a head unit can take longer than that to set its
+    // clock. Once, because more could loop. With no transaction at all (a
+    // callback this browser did not start, or a second load of one that already
+    // finished) it says so instead.
+    const fail = async (): Promise<Response> => {
       const s = await resolve(ctx, secret, false, m3Server);
       if (s && s !== 'error') return redirect(found?.tx.ret ?? '/', spent);
+      const n = found?.tx.n ?? 0;
+      if (found && n < MAX_RESTARTS) {
+        return start(request, secret, url.host, m3Browser, callback, found.tx.ret, n + 1, clock.ok ? clock.t : null, spent);
+      }
       return retryPage(request, spent);
-    }
+    };
+
+    const code = url.searchParams.get('code') ?? '';
+    if (!found || !found.fresh || !/^[A-Za-z0-9_-]{43}$/.test(code)) return fail();
 
     let res: Response;
     try {
@@ -430,11 +559,7 @@ export function createGate(config: GateConfig, deps: GateDeps = {}) {
     } catch {
       return jsonRes({ error: 'unavailable' }, 503);
     }
-    if (res.status === 400 || res.status === 401) {
-      const s = await resolve(ctx, secret, false, m3Server);
-      if (s && s !== 'error') return redirect(found.tx.ret, spent);
-      return retryPage(request, spent);
-    }
+    if (res.status === 400 || res.status === 401) return fail();
     if (res.status !== 200) return jsonRes({ error: 'unavailable' }, 503);
     const body = (await res.json().catch(() => null)) as { access_token?: string } | null;
     if (!body?.access_token || !/^[A-Za-z0-9_-]{43}$/.test(body.access_token)) return jsonRes({ error: 'unavailable' }, 503);

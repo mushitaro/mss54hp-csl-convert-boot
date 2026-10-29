@@ -108,7 +108,8 @@ describe('a failure in the preview build', () => {
         await tick();
         await tick();
 
-        expect(seen.map((s) => s.url)).toEqual(['/_gate/status']);
+        // `t` is this device's clock, which the gate checks before it extends the session.
+        expect(seen.map((s) => s.url)).toEqual([expect.stringMatching(/^\/_gate\/status\?t=\d+$/)]);
     });
 
     it('never throws into the caller, even when the network does', () => {
